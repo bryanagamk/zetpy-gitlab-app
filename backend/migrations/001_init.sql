@@ -15,6 +15,26 @@ CREATE TABLE IF NOT EXISTS projects (
   updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS issue_label_events (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  project_id BIGINT NOT NULL,
+  issue_id BIGINT NOT NULL,
+  issue_iid INT NOT NULL,
+  gitlab_label_id BIGINT NULL,
+  label_name VARCHAR(512) NOT NULL,
+  action VARCHAR(32) NOT NULL,
+  author_username VARCHAR(255) NULL,
+  event_created_at DATETIME(3) NULL,
+  raw_json JSON NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  CONSTRAINT fk_ile_project FOREIGN KEY (project_id) REFERENCES projects (id) ON DELETE CASCADE,
+  CONSTRAINT fk_ile_issue FOREIGN KEY (issue_id) REFERENCES issues (id) ON DELETE CASCADE,
+  KEY idx_ile_project (project_id),
+  KEY idx_ile_issue (issue_id),
+  KEY idx_ile_project_iid (project_id, issue_iid),
+  KEY idx_ile_event_created_at (event_created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS issues (
   id BIGINT NOT NULL PRIMARY KEY,
   project_id BIGINT NOT NULL,

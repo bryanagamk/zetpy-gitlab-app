@@ -89,6 +89,30 @@ func (s *Service) Run(ctx context.Context) (*store.Project, int, int, error) {
 			if err := store.UpsertIssue(ctx, s.DB, iss); err != nil {
 				return fmt.Errorf("upsert issue %d: %w", gi.ID, err)
 			}
+
+			// fetch and persist label events for this issue
+			if err := s.Client.ListAllIssueLabelEvents(ctx, gp.ID, gi.IID, func(events []gitlab.LabelEvent) error {
+				for _, ev := range events {
+					raw, _ := json.Marshal(ev)
+					ile := &store.IssueLabelEvent{
+						ProjectID:      gp.ID,
+						IssueID:        gi.ID,
+						IssueIID:       gi.IID,
+						GitlabLabelID:  sql.NullInt64{Int64: ev.Label.ID, Valid: ev.Label.ID != 0},
+						LabelName:      ev.Label.Name,
+						Action:         ev.Action,
+						AuthorUsername: sql.NullString{String: ev.User.Username, Valid: ev.User.Username != ""},
+						EventCreatedAt: sql.NullTime{Time: ev.CreatedAt.UTC(), Valid: true},
+						RawJSON:        raw,
+					}
+					if err := store.InsertIssueLabelEvent(ctx, s.DB, ile); err != nil {
+						return fmt.Errorf("insert label event for issue %d: %w", gi.ID, err)
+					}
+				}
+				return nil
+			}); err != nil {
+				return fmt.Errorf("list label events for issue %d: %w", gi.ID, err)
+			}
 			n++
 		}
 		return nil

@@ -45,6 +45,19 @@ type Issue struct {
 	ClosedAt        sql.NullTime
 }
 
+type IssueLabelEvent struct {
+	ID             int64
+	ProjectID      int64
+	IssueID        int64
+	IssueIID       int
+	GitlabLabelID  sql.NullInt64
+	LabelName      string
+	Action         string
+	AuthorUsername sql.NullString
+	EventCreatedAt sql.NullTime
+	RawJSON        []byte
+}
+
 func OpenMySQL(dsn string) (*sql.DB, error) {
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
@@ -117,6 +130,25 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 			PRIMARY KEY (project_id, gitlab_id),
 			KEY idx_pl_project (project_id),
 			CONSTRAINT fk_pl_project FOREIGN KEY (project_id) REFERENCES projects (id) ON DELETE CASCADE
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+		`CREATE TABLE IF NOT EXISTS issue_label_events (
+			id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+			project_id BIGINT NOT NULL,
+			issue_id BIGINT NOT NULL,
+			issue_iid INT NOT NULL,
+			gitlab_label_id BIGINT NULL,
+			label_name VARCHAR(512) NOT NULL,
+			action VARCHAR(32) NOT NULL,
+			author_username VARCHAR(255) NULL,
+			event_created_at DATETIME(3) NULL,
+			raw_json JSON NULL,
+			created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+			CONSTRAINT fk_ile_project FOREIGN KEY (project_id) REFERENCES projects (id) ON DELETE CASCADE,
+			CONSTRAINT fk_ile_issue FOREIGN KEY (issue_id) REFERENCES issues (id) ON DELETE CASCADE,
+			KEY idx_ile_project (project_id),
+			KEY idx_ile_issue (issue_id),
+			KEY idx_ile_project_iid (project_id, issue_iid),
+			KEY idx_ile_event_created_at (event_created_at)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 	}
 	for _, s := range stmts {
@@ -195,6 +227,19 @@ func UpsertIssue(ctx context.Context, db *sql.DB, i *Issue) error {
 		i.ID, i.ProjectID, i.IID, i.Title, nullStr(i.Description), i.State, nullStr(i.IssueType), i.WebURL,
 		nullStr(i.AuthorUsername), i.AssigneesJSON, i.LabelsJSON, mj, nullStr(i.MilestoneTitle),
 		nullTime(i.CreatedAtGitLab), nullTime(i.UpdatedAtGitLab), nullTime(i.ClosedAt),
+	)
+	return err
+}
+
+func InsertIssueLabelEvent(ctx context.Context, db *sql.DB, e *IssueLabelEvent) error {
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO issue_label_events (
+			project_id, issue_id, issue_iid, gitlab_label_id, label_name,
+			action, author_username, event_created_at, raw_json
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		e.ProjectID, e.IssueID, e.IssueIID, nullInt64(e.GitlabLabelID), e.LabelName,
+		e.Action, nullStr(e.AuthorUsername), nullTime(e.EventCreatedAt), e.RawJSON,
 	)
 	return err
 }
@@ -319,4 +364,11 @@ func nullTime(nt sql.NullTime) any {
 		return nil
 	}
 	return nt.Time
+}
+
+func nullInt64(ni sql.NullInt64) any {
+	if !ni.Valid {
+		return nil
+	}
+	return ni.Int64
 }

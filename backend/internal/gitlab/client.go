@@ -42,16 +42,16 @@ func (c *Client) get(ctx context.Context, path string, q url.Values) (*http.Resp
 }
 
 type Project struct {
-	ID                int64   `json:"id"`
-	PathWithNamespace string  `json:"path_with_namespace"`
-	Name              string  `json:"name"`
-	WebURL            string  `json:"web_url"`
-	Description       string  `json:"description"`
-	DefaultBranch     string  `json:"default_branch"`
-	StarCount         int     `json:"star_count"`
-	ForksCount        int     `json:"forks_count"`
-	OpenIssuesCount   int     `json:"open_issues_count"`
-	Visibility        string  `json:"visibility"`
+	ID                int64  `json:"id"`
+	PathWithNamespace string `json:"path_with_namespace"`
+	Name              string `json:"name"`
+	WebURL            string `json:"web_url"`
+	Description       string `json:"description"`
+	DefaultBranch     string `json:"default_branch"`
+	StarCount         int    `json:"star_count"`
+	ForksCount        int    `json:"forks_count"`
+	OpenIssuesCount   int    `json:"open_issues_count"`
+	Visibility        string `json:"visibility"`
 }
 
 func (c *Client) GetProject(ctx context.Context, pathWithNamespace string) (*Project, error) {
@@ -73,18 +73,18 @@ func (c *Client) GetProject(ctx context.Context, pathWithNamespace string) (*Pro
 }
 
 type Issue struct {
-	ID          int64     `json:"id"`
-	IID         int       `json:"iid"`
-	ProjectID   int64     `json:"project_id"`
-	Title       string    `json:"title"`
-	Description string    `json:"description"`
-	State       string    `json:"state"`
-	Type        string    `json:"type"`
-	WebURL      string    `json:"web_url"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID          int64      `json:"id"`
+	IID         int        `json:"iid"`
+	ProjectID   int64      `json:"project_id"`
+	Title       string     `json:"title"`
+	Description string     `json:"description"`
+	State       string     `json:"state"`
+	Type        string     `json:"type"`
+	WebURL      string     `json:"web_url"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
 	ClosedAt    *time.Time `json:"closed_at"`
-	Labels      []string  `json:"labels"`
+	Labels      []string   `json:"labels"`
 	Author      struct {
 		Username string `json:"username"`
 	} `json:"author"`
@@ -94,6 +94,57 @@ type Issue struct {
 	Milestone *struct {
 		Title string `json:"title"`
 	} `json:"milestone"`
+}
+
+type LabelEvent struct {
+	ID        int64     `json:"id"`
+	Action    string    `json:"action"`
+	CreatedAt time.Time `json:"created_at"`
+	User      struct {
+		Username string `json:"username"`
+	} `json:"user"`
+	Label struct {
+		ID   int64  `json:"id"`
+		Name string `json:"name"`
+	} `json:"label"`
+}
+
+// ListAllIssueLabelEvents paginates over /projects/:id/issues/:issue_iid/resource_label_events
+func (c *Client) ListAllIssueLabelEvents(ctx context.Context, projectID int64, issueIID int, onPage func(page []LabelEvent) error) error {
+	page := 1
+	for {
+		q := url.Values{}
+		q.Set("per_page", "100")
+		q.Set("page", strconv.Itoa(page))
+
+		resp, err := c.get(ctx, fmt.Sprintf("/projects/%d/issues/%d/resource_label_events", projectID, issueIID), q)
+		if err != nil {
+			return err
+		}
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return err
+		}
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("gitlab label events page %d: status %d: %s", page, resp.StatusCode, string(body))
+		}
+		var batch []LabelEvent
+		if err := json.Unmarshal(body, &batch); err != nil {
+			return err
+		}
+		if len(batch) == 0 {
+			break
+		}
+		if err := onPage(batch); err != nil {
+			return err
+		}
+		if len(batch) < 100 {
+			break
+		}
+		page++
+	}
+	return nil
 }
 
 func (c *Client) ListAllIssues(ctx context.Context, projectID int64, onPage func(page []Issue) error) error {
