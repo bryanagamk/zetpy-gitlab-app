@@ -352,7 +352,7 @@ export default function App() {
   const [issueModule, setIssueModule] = useState("");
   const [issueLabel, setIssueLabel] = useState("");
   const [page, setPage] = useState(1);
-  const limit = 30;
+  const limit = 15;
 
   const issues = useAsync(
     () =>
@@ -386,12 +386,7 @@ export default function App() {
         <div>
           <h1 style={{ margin: 0, fontSize: "1.75rem", letterSpacing: "-0.02em" }}>zetpy-core Issues</h1>
           <p style={{ margin: "8px 0 0", color: "var(--muted)", maxWidth: 640 }}>
-            GitLab issues are mirrored in MySQL. The <span className="mono">modules_json</span> column stores the module
-            segment array (for example from a title like <span className="mono">[Live][Shopee][Order]</span>). The first
-            chart counts only issues with segments persisted in <span className="mono">modules_json</span>; the second
-            chart also includes modules inferred from the title or from <span className="mono">module:…</span> labels when
-            JSON is empty. The <span className="mono">?module=…</span> filter matches each segment. Work type (bug,
-            feature, …) is derived from project labels.
+            GitLab issues are synced to MySQL. Modules are extracted from title tags or labels. Use filters to narrow results.
           </p>
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 8, alignItems: "flex-end" }}>
@@ -521,9 +516,7 @@ export default function App() {
         <Panel title="Issue creation trend by kind" loading={issueTrend.loading} error={issueTrend.err}>
           <>
             <p style={{ fontSize: 13, color: "var(--muted)", margin: "0 0 12px", lineHeight: 1.45 }}>
-              Number of issues <strong>created in GitLab</strong> in each period, split by work kind (from project labels).
-              Weeks start on Monday (UTC); months and years use the calendar period in UTC. Optionally restrict to a single
-              calendar year (UTC) to see that year only. Issues without a GitLab creation time are excluded.
+              Number of issues created per period, grouped by kind (from labels). Choose granularity and year (UTC).
             </p>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center", marginBottom: 12 }}>
               <label style={{ fontSize: 13, color: "var(--muted)" }}>
@@ -604,34 +597,25 @@ export default function App() {
                 </div>
               )
             )}
-            <div
-              style={{
-                marginTop: 16,
-                padding: "12px 14px",
-                borderRadius: 10,
-                background: "var(--panel-2)",
-                border: "1px solid var(--border)",
-                fontSize: 13,
-                lineHeight: 1.55,
-                color: "var(--muted)",
-              }}
-            >
-              <strong style={{ color: "var(--text)" }}>How to read this</strong>
-              <ul style={{ margin: "8px 0 0", paddingLeft: 20 }}>
-                <li>
-                  <span style={{ color: kindColors.bug }}>Bug</span> — A sustained rise can point to release quality
-                  pressure or regressions; compare with your release cadence.
-                </li>
-                <li>
-                  <span style={{ color: kindColors.feature }}>Feature</span> — More new features over time often reflects
-                  higher roadmap or market demand.
-                </li>
-                <li>
-                  <span style={{ color: kindColors.improvement }}>Improvement</span> — Elevated counts may indicate UX
-                  friction, internal workflow pain, or technical-debt cleanup work.
-                </li>
-              </ul>
-            </div>
+              <div
+                style={{
+                  marginTop: 16,
+                  padding: "12px 14px",
+                  borderRadius: 10,
+                  background: "var(--panel-2)",
+                  border: "1px solid var(--border)",
+                  fontSize: 13,
+                  lineHeight: 1.55,
+                  color: "var(--muted)",
+                }}
+              >
+                <strong style={{ color: "var(--text)" }}>Notes</strong>
+                <ul style={{ margin: "8px 0 0", paddingLeft: 20 }}>
+                  <li><span style={{ color: kindColors.bug }}>Bug</span> — reported issues.</li>
+                  <li><span style={{ color: kindColors.feature }}>Feature</span> — new feature requests.</li>
+                  <li><span style={{ color: kindColors.improvement }}>Improvement</span> — fixes / improvements.</li>
+                </ul>
+              </div>
           </>
         </Panel>
       </section>
@@ -648,10 +632,7 @@ export default function App() {
           {workMetrics.data && (
             <>
               <p style={{ fontSize: 13, color: "var(--muted)", margin: "0 0 12px", lineHeight: 1.45 }}>
-                Open issues only, bucketed by days since <strong>GitLab creation</strong> (UTC, day-based). Stacks show
-                the <strong>first module segment</strong> (same rules as the dashboard: title <span className="mono">[…]</span>{" "}
-                tags and label fallbacks)—not work-kind labels. Up to eight largest modules are shown; the rest roll into{" "}
-                <strong>Other modules</strong>.
+                Open issues only, grouped by age (days since GitLab creation). Stacks show the main module.
               </p>
               <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8 }}>
                 Snapshot: {formatDate(workMetrics.data.open_issue_aging.as_of)}
@@ -711,13 +692,7 @@ export default function App() {
           {workMetrics.data && (
             <>
               <p style={{ fontSize: 13, color: "var(--muted)", margin: "0 0 12px", lineHeight: 1.45 }}>
-                Average <strong>calendar days</strong> from GitLab <span className="mono">created</span> to an{" "}
-                <strong>end time</strong> derived from your workflow: the <span className="mono">close</span> label means
-                fully done; <span className="mono">in-live</span> (and variants) means solved / live; GitLab{" "}
-                <span className="mono">closed</span> still counts when there is no workflow label. End time prefers{" "}
-                <span className="mono">closed_at</span>, otherwise <span className="mono">updated_at</span> (approximate
-                when labels moved on still-open issues). Per module uses the <strong>first</strong> module segment;
-                modules with fewer than 2 qualifying issues are omitted from the chart.
+                Average days from creation to resolution according to workflow (labels 'in-live'/'close' or GitLab 'closed').
               </p>
               {workMetrics.data.resolution.closed_issues_used > 0 ? (
                 <>
@@ -1175,8 +1150,8 @@ export default function App() {
                     <tr style={{ textAlign: "left", color: "var(--muted)" }}>
                       <th style={th}>IID</th>
                       <th style={th}>Title</th>
-                      <th style={th}>Module (segments)</th>
-                      <th style={th}>Kind</th>
+                      <th style={th}>Module</th>
+                      <th style={th}>Label</th>
                       <th style={th}>Status</th>
                     </tr>
                   </thead>
