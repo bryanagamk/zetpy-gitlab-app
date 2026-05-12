@@ -22,7 +22,7 @@ type IssueTrendPoint struct {
 
 // IssueTrend is a time series for charting issue creation by kind.
 type IssueTrend struct {
-	Granularity string            `json:"granularity"` // "week" | "month" | "year"
+	Granularity string            `json:"granularity"`        // "week" | "month" | "year"
 	ForYear     *int              `json:"for_year,omitempty"` // when set, only issues created in this calendar year (UTC)
 	Points      []IssueTrendPoint `json:"points"`
 }

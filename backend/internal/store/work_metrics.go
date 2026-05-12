@@ -91,11 +91,19 @@ func BuildWorkMetrics(ctx context.Context, db *sql.DB, projectID int64) (*WorkMe
 		ResolutionInsights: ResolutionInsights{ByModule: nil},
 	}
 
-	// --- Open issue aging (by first module segment; not by work-kind labels) ---
+	// --- Open issue aging (by first activity -> In Live add; fallback to created_at_gitlab) ---
+	// We compute for every issue in the project: first activity time (min event_created_at),
+	// first In Live add time (min event_created_at where label_name indicates in-live and action='add').
+	// If first activity is NULL we fall back to created_at_gitlab. If in-live exists, age = in_live - first_activity,
+	// otherwise age = asOf - first_activity.
 	rowsOpen, err := db.QueryContext(ctx, `
-		SELECT title, labels_json, modules_json, created_at_gitlab
-		FROM issues
-		WHERE project_id = ? AND state = 'opened' AND created_at_gitlab IS NOT NULL
+		SELECT i.id, i.iid, i.title, i.labels_json, i.modules_json, i.created_at_gitlab,
+			MIN(e.event_created_at) AS first_activity,
+			MIN(CASE WHEN (LOWER(TRIM(e.label_name)) IN ('in-live','in live','in_live','inlive')) AND LOWER(TRIM(e.action)) = 'add' THEN e.event_created_at END) AS in_live_at
+		FROM issues i
+		LEFT JOIN issue_label_events e ON e.issue_id = i.id
+		WHERE i.project_id = ?
+		GROUP BY i.id, i.iid, i.title, i.labels_json, i.modules_json, i.created_at_gitlab
 	`, projectID)
 	if err != nil {
 		return nil, err
@@ -103,21 +111,49 @@ func BuildWorkMetrics(ctx context.Context, db *sql.DB, projectID int64) (*WorkMe
 	defer rowsOpen.Close()
 
 	for rowsOpen.Next() {
-		var title string
-		var labelsJSON, modulesJSON []byte
-		var created sql.NullTime
-		if err := rowsOpen.Scan(&title, &labelsJSON, &modulesJSON, &created); err != nil {
+		var (
+			id            int64
+			iid           int
+			title         string
+			labelsJSON    []byte
+			modulesJSON   []byte
+			created       sql.NullTime
+			firstActivity sql.NullTime
+			inLiveAt      sql.NullTime
+		)
+		if err := rowsOpen.Scan(&id, &iid, &title, &labelsJSON, &modulesJSON, &created, &firstActivity, &inLiveAt); err != nil {
 			return nil, err
 		}
-		if !created.Valid {
+
+		// determine baseline: firstActivity if present, else created
+		var baseline time.Time
+		if firstActivity.Valid {
+			baseline = firstActivity.Time.UTC()
+		} else if created.Valid {
+			baseline = created.Time.UTC()
+		} else {
+			// nothing to base on; skip
 			continue
 		}
-		ageHours := asOf.Sub(created.Time.UTC()).Hours()
-		ageDays := int(math.Floor(ageHours / 24))
-		if ageDays < 0 {
-			ageDays = 0
+
+		var end time.Time
+		if inLiveAt.Valid {
+			end = inLiveAt.Time.UTC()
+			if end.Before(baseline) {
+				// corrupt data, skip
+				continue
+			}
+		} else {
+			end = asOf
 		}
+
+		daysFloat := end.Sub(baseline).Hours() / 24
+		if daysFloat < 0 {
+			continue
+		}
+		ageDays := int(math.Floor(daysFloat))
 		bi := ageBucketIndex(ageDays)
+
 		var labels []string
 		_ = json.Unmarshal(labelsJSON, &labels)
 		mods := ModulesForIssueRow(title, labels, modulesJSON)

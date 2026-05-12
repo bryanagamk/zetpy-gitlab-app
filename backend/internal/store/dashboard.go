@@ -8,20 +8,20 @@ import (
 )
 
 type Dashboard struct {
-	TotalIssues     int            `json:"total_issues"`
-	ByState         map[string]int `json:"by_state"`
-	ByKind          map[string]int `json:"by_kind"`
-	ByModule        []ModuleStat   `json:"by_module"`
-	ByModuleStored  []ModuleStat   `json:"by_module_stored"`
-	TopLabels       []LabelStat    `json:"top_labels"`
+	TotalIssues    int            `json:"total_issues"`
+	ByState        map[string]int `json:"by_state"`
+	ByKind         map[string]int `json:"by_kind"`
+	ByModule       []ModuleStat   `json:"by_module"`
+	ByModuleStored []ModuleStat   `json:"by_module_stored"`
+	TopLabels      []LabelStat    `json:"top_labels"`
 }
 
 type ModuleStat struct {
-	Module   string         `json:"module"`
-	Total    int            `json:"total"`
-	Opened   int            `json:"opened"`
-	Closed   int            `json:"closed"`
-	ByKind   map[string]int `json:"by_kind"`
+	Module string         `json:"module"`
+	Total  int            `json:"total"`
+	Opened int            `json:"opened"`
+	Closed int            `json:"closed"`
+	ByKind map[string]int `json:"by_kind"`
 }
 
 type LabelStat struct {
