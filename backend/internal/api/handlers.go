@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"sort"
 	"strconv"
 	"time"
 
@@ -207,6 +208,8 @@ func (s *Server) GetOpenAgingIssues(w http.ResponseWriter, r *http.Request) {
 				filtered = append(filtered, AgingIssueDTOFromDetail(d))
 			}
 		}
+		// sort by duration desc for modal presentation
+		sort.Slice(filtered, func(i, j int) bool { return filtered[i].DurationDays > filtered[j].DurationDays })
 		writeJSON(w, http.StatusOK, map[string]any{"items": filtered, "total": len(filtered)})
 		return
 	}
@@ -215,6 +218,8 @@ func (s *Server) GetOpenAgingIssues(w http.ResponseWriter, r *http.Request) {
 	for _, d := range details {
 		out = append(out, AgingIssueDTOFromDetail(d))
 	}
+	// sort all results by duration desc to provide consistent ordering
+	sort.Slice(out, func(i, j int) bool { return out[i].DurationDays > out[j].DurationDays })
 	writeJSON(w, http.StatusOK, map[string]any{"items": out, "total": len(out)})
 }
 
