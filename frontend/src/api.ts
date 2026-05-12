@@ -82,6 +82,26 @@ export type WorkMetrics = {
   resolution: ResolutionInsights;
 };
 
+export type BugHeatmapEntry = {
+  module: string;
+  bug_ratio_percent: number;
+  total_issues: number;
+  bug_count: number;
+};
+
+export type ReopenStats = {
+  total_issues: number;
+  resolved_once: number;
+  reopened_once: number;
+  reopened_more_than_two: number;
+};
+
+// extend WorkMetrics with new visuals
+export type WorkMetricsExtended = WorkMetrics & {
+  bug_heatmap: BugHeatmapEntry[];
+  reopen_stats: ReopenStats;
+};
+
 export type Project = {
   id: number;
   path_with_namespace: string;
@@ -132,9 +152,9 @@ export async function getIssueTrend(params: {
   return parseJSON<IssueTrend>(res);
 }
 
-export async function getWorkMetrics(): Promise<WorkMetrics> {
+export async function getWorkMetrics(): Promise<WorkMetricsExtended> {
   const res = await fetch(`${prefix}/api/dashboard/work-metrics`);
-  return parseJSON<WorkMetrics>(res);
+  return parseJSON<WorkMetricsExtended>(res);
 }
 
 export async function getProject(): Promise<Project> {
@@ -180,5 +200,12 @@ export async function getAgingBucketIssues(bucket: number): Promise<{ items: { i
   const q = new URLSearchParams();
   q.set("bucket", String(bucket));
   const res = await fetch(`${prefix}/api/dashboard/open-aging/issues?${q.toString()}`);
+  return parseJSON(res);
+}
+
+export async function getReopenedIssues(category: string): Promise<{ items: { id: number; iid: number; title: string; labels: string[]; modules: string[]; module: string; reopen_count: number }[]; total: number }> {
+  const q = new URLSearchParams();
+  q.set("category", category);
+  const res = await fetch(`${prefix}/api/dashboard/reopened/issues?${q.toString()}`);
   return parseJSON(res);
 }

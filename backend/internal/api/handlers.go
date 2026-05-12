@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -223,6 +224,104 @@ func (s *Server) GetOpenAgingIssues(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": out, "total": len(out)})
 }
 
+// GetReopenedIssues returns issues for a reopen category filter.
+// category: "resolved_once" | "reopened_once" | "reopened_more"
+func (s *Server) GetReopenedIssues(w http.ResponseWriter, r *http.Request) {
+	id, err := store.FirstProjectID(r.Context(), s.DB)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			writeErr(w, http.StatusNotFound, "no data yet; run POST /api/sync")
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	cat := r.URL.Query().Get("category")
+	// load reopen counts per issue
+	rows, err := s.DB.QueryContext(r.Context(), `
+		SELECT i.id, i.iid, i.title, i.labels_json, i.modules_json, COALESCE(SUM(CASE WHEN LOWER(TRIM(s.state)) LIKE '%reopen%' THEN 1 ELSE 0 END),0) AS reopen_count
+		FROM issues i
+		LEFT JOIN issue_state_events s ON s.issue_id = i.id
+		WHERE i.project_id = ?
+		GROUP BY i.id, i.iid, i.title, i.labels_json, i.modules_json
+	`, id)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer rows.Close()
+
+	type ReopenIssueDTO struct {
+		ID          int64    `json:"id"`
+		IID         int      `json:"iid"`
+		Title       string   `json:"title"`
+		Labels      []string `json:"labels"`
+		Modules     []string `json:"modules"`
+		Module      string   `json:"module"`
+		ReopenCount int      `json:"reopen_count"`
+	}
+
+	var out []ReopenIssueDTO
+	for rows.Next() {
+		var idv int64
+		var iid int
+		var title string
+		var labelsJSON []byte
+		var modulesJSON []byte
+		var reopenCount int
+		if err := rows.Scan(&idv, &iid, &title, &labelsJSON, &modulesJSON, &reopenCount); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		var labels []string
+		_ = json.Unmarshal(labelsJSON, &labels)
+		mods := store.ModulesForIssueRow(title, labels, modulesJSON)
+		mod := "__Other__"
+		if len(mods) > 0 {
+			mod = strings.TrimSpace(mods[0])
+			if mod == "" {
+				mod = "__Other__"
+			}
+		}
+		out = append(out, ReopenIssueDTO{
+			ID:          idv,
+			IID:         iid,
+			Title:       title,
+			Labels:      labels,
+			Modules:     mods,
+			Module:      mod,
+			ReopenCount: reopenCount,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// filter by category
+	filtered := make([]ReopenIssueDTO, 0, len(out))
+	for _, it := range out {
+		switch cat {
+		case "reopened_once":
+			if it.ReopenCount == 1 {
+				filtered = append(filtered, it)
+			}
+		case "reopened_more":
+			if it.ReopenCount > 1 {
+				filtered = append(filtered, it)
+			}
+		default: // resolved_once
+			if it.ReopenCount == 0 {
+				filtered = append(filtered, it)
+			}
+		}
+	}
+	// sort descending by reopen count
+	sort.Slice(filtered, func(i, j int) bool { return filtered[i].ReopenCount > filtered[j].ReopenCount })
+
+	writeJSON(w, http.StatusOK, map[string]any{"items": filtered, "total": len(filtered)})
+}
+
 type AgingIssueDTO struct {
 	ID           int64    `json:"id"`
 	IID          int      `json:"iid"`
@@ -350,6 +449,7 @@ func (s *Server) Routes() chi.Router {
 		r.Get("/labels", s.GetLabels)
 		r.Get("/issues", s.GetIssues)
 		r.Get("/dashboard/open-aging/issues", s.GetOpenAgingIssues)
+		r.Get("/dashboard/reopened/issues", s.GetReopenedIssues)
 	})
 	return r
 }

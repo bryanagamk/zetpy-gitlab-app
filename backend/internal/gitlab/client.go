@@ -109,6 +109,15 @@ type LabelEvent struct {
 	} `json:"label"`
 }
 
+type StateEvent struct {
+	ID        int64     `json:"id"`
+	State     string    `json:"state"`
+	CreatedAt time.Time `json:"created_at"`
+	User      struct {
+		Username string `json:"username"`
+	} `json:"user"`
+}
+
 // ListAllIssueLabelEvents paginates over /projects/:id/issues/:issue_iid/resource_label_events
 func (c *Client) ListAllIssueLabelEvents(ctx context.Context, projectID int64, issueIID int, onPage func(page []LabelEvent) error) error {
 	page := 1
@@ -130,6 +139,44 @@ func (c *Client) ListAllIssueLabelEvents(ctx context.Context, projectID int64, i
 			return fmt.Errorf("gitlab label events page %d: status %d: %s", page, resp.StatusCode, string(body))
 		}
 		var batch []LabelEvent
+		if err := json.Unmarshal(body, &batch); err != nil {
+			return err
+		}
+		if len(batch) == 0 {
+			break
+		}
+		if err := onPage(batch); err != nil {
+			return err
+		}
+		if len(batch) < 100 {
+			break
+		}
+		page++
+	}
+	return nil
+}
+
+// ListAllIssueStateEvents paginates over /projects/:id/issues/:issue_iid/resource_state_events
+func (c *Client) ListAllIssueStateEvents(ctx context.Context, projectID int64, issueIID int, onPage func(page []StateEvent) error) error {
+	page := 1
+	for {
+		q := url.Values{}
+		q.Set("per_page", "100")
+		q.Set("page", strconv.Itoa(page))
+
+		resp, err := c.get(ctx, fmt.Sprintf("/projects/%d/issues/%d/resource_state_events", projectID, issueIID), q)
+		if err != nil {
+			return err
+		}
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return err
+		}
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("gitlab state events page %d: status %d: %s", page, resp.StatusCode, string(body))
+		}
+		var batch []StateEvent
 		if err := json.Unmarshal(body, &batch); err != nil {
 			return err
 		}

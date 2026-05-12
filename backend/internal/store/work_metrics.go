@@ -16,6 +16,8 @@ const otherModule = "__Other__"
 type WorkMetrics struct {
 	OpenIssueAging     OpenIssueAging     `json:"open_issue_aging"`
 	ResolutionInsights ResolutionInsights `json:"resolution"`
+	BugHeatmap         []BugHeatmapEntry  `json:"bug_heatmap"`
+	ReopenStats        ReopenStats        `json:"reopen_stats"`
 }
 
 // AgingBucket is one age range for still-open issues.
@@ -25,6 +27,20 @@ type AgingBucket struct {
 	MaxDays    *int           `json:"max_days,omitempty"` // nil = no upper bound
 	Total      int            `json:"total"`
 	ByModule   map[string]int `json:"by_module"` // first module segment per issue (same rules as dashboard modules)
+}
+
+type BugHeatmapEntry struct {
+	Module          string  `json:"module"`
+	BugRatioPercent float64 `json:"bug_ratio_percent"`
+	TotalIssues     int     `json:"total_issues"`
+	BugCount        int     `json:"bug_count"`
+}
+
+type ReopenStats struct {
+	TotalIssues         int `json:"total_issues"`
+	ResolvedOnce        int `json:"resolved_once"`
+	ReopenedOnce        int `json:"reopened_once"`
+	ReopenedMoreThanTwo int `json:"reopened_more_than_two"`
 }
 
 // OpenIssueAging counts opened issues by age since GitLab creation (UTC day-based).
@@ -89,6 +105,8 @@ func BuildWorkMetrics(ctx context.Context, db *sql.DB, projectID int64) (*WorkMe
 			Buckets:     openAgingBucketDefs(),
 		},
 		ResolutionInsights: ResolutionInsights{ByModule: nil},
+		BugHeatmap:         nil,
+		ReopenStats:        ReopenStats{},
 	}
 
 	// --- Open issue aging (by first activity -> In Live add; fallback to created_at_gitlab) ---
@@ -166,6 +184,110 @@ func BuildWorkMetrics(ctx context.Context, db *sql.DB, projectID int64) (*WorkMe
 	}
 	if err := rowsOpen.Err(); err != nil {
 		return nil, err
+	}
+
+	// --- Bug heatmap per module: compute bug ratio per module ---
+	moduleTotal := map[string]int{}
+	moduleBugs := map[string]int{}
+	rowsMod, err := db.QueryContext(ctx, `
+		SELECT title, labels_json, modules_json FROM issues WHERE project_id = ?
+	`, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rowsMod.Close()
+	for rowsMod.Next() {
+		var title string
+		var labelsJSON []byte
+		var modulesJSON []byte
+		if err := rowsMod.Scan(&title, &labelsJSON, &modulesJSON); err != nil {
+			return nil, err
+		}
+		var labels []string
+		_ = json.Unmarshal(labelsJSON, &labels)
+		mods := ModulesForIssueRow(title, labels, modulesJSON)
+		mod := otherModule
+		if len(mods) > 0 {
+			mod = strings.TrimSpace(mods[0])
+			if mod == "" {
+				mod = otherModule
+			}
+		}
+		moduleTotal[mod]++
+		if KindFromIssueLabels(labels, catalog) == "bug" {
+			moduleBugs[mod]++
+		}
+	}
+	if err := rowsMod.Err(); err != nil {
+		return nil, err
+	}
+	// build heatmap entries sorted by bug ratio desc
+	var heat []BugHeatmapEntry
+	for m, tot := range moduleTotal {
+		bugs := moduleBugs[m]
+		ratio := 0.0
+		if tot > 0 {
+			ratio = (float64(bugs) / float64(tot)) * 100.0
+		}
+		heat = append(heat, BugHeatmapEntry{Module: m, BugRatioPercent: ratio, TotalIssues: tot, BugCount: bugs})
+	}
+	sort.Slice(heat, func(i, j int) bool { return heat[i].BugRatioPercent > heat[j].BugRatioPercent })
+	out.BugHeatmap = heat
+
+	// --- Reopened issue rate ---
+	// Count reopen occurrences per issue from issue_state_events. Heuristic: count events where state contains 'reopen'.
+	rowsRe, err := db.QueryContext(ctx, `
+		SELECT issue_id, state, COUNT(*) as cnt FROM issue_state_events WHERE project_id = ? GROUP BY issue_id, state
+	`, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rowsRe.Close()
+	reopenCounts := map[int64]int{}
+	for rowsRe.Next() {
+		var issueID int64
+		var state string
+		var cnt int
+		if err := rowsRe.Scan(&issueID, &state, &cnt); err != nil {
+			return nil, err
+		}
+		ls := strings.ToLower(strings.TrimSpace(state))
+		if strings.Contains(ls, "reopen") || strings.Contains(ls, "reopened") {
+			reopenCounts[issueID] += cnt
+		}
+	}
+	if err := rowsRe.Err(); err != nil {
+		return nil, err
+	}
+	var resolvedOnce, reopenedOnce, reopenedMore int
+	// consider all issues in project
+	rowsAllIssues, err := db.QueryContext(ctx, `SELECT id FROM issues WHERE project_id = ?`, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rowsAllIssues.Close()
+	totalIssues := 0
+	for rowsAllIssues.Next() {
+		var iid int64
+		if err := rowsAllIssues.Scan(&iid); err != nil {
+			return nil, err
+		}
+		totalIssues++
+		rc := reopenCounts[iid]
+		switch {
+		case rc == 0:
+			resolvedOnce++
+		case rc == 1:
+			reopenedOnce++
+		default:
+			reopenedMore++
+		}
+	}
+	out.ReopenStats = ReopenStats{
+		TotalIssues:         totalIssues,
+		ResolvedOnce:        resolvedOnce,
+		ReopenedOnce:        reopenedOnce,
+		ReopenedMoreThanTwo: reopenedMore,
 	}
 
 	// --- Resolution: GitLab closed_at and/or workflow labels in-live, close ---

@@ -113,6 +113,28 @@ func (s *Service) Run(ctx context.Context) (*store.Project, int, int, error) {
 			}); err != nil {
 				return fmt.Errorf("list label events for issue %d: %w", gi.ID, err)
 			}
+
+			// fetch and persist state events (reopen/close)
+			if err := s.Client.ListAllIssueStateEvents(ctx, gp.ID, gi.IID, func(events []gitlab.StateEvent) error {
+				for _, ev := range events {
+					raw, _ := json.Marshal(ev)
+					ise := &store.IssueStateEvent{
+						ProjectID:      gp.ID,
+						IssueID:        gi.ID,
+						IssueIID:       gi.IID,
+						State:          ev.State,
+						AuthorUsername: sql.NullString{String: ev.User.Username, Valid: ev.User.Username != ""},
+						EventCreatedAt: sql.NullTime{Time: ev.CreatedAt.UTC(), Valid: true},
+						RawJSON:        raw,
+					}
+					if err := store.InsertIssueStateEvent(ctx, s.DB, ise); err != nil {
+						return fmt.Errorf("insert state event for issue %d: %w", gi.ID, err)
+					}
+				}
+				return nil
+			}); err != nil {
+				return fmt.Errorf("list state events for issue %d: %w", gi.ID, err)
+			}
 			n++
 		}
 		return nil

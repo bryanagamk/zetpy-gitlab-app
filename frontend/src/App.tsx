@@ -268,6 +268,23 @@ export default function App() {
     () => (workMetrics.data?.open_issue_aging.buckets ?? []).reduce((s, b) => s + b.total, 0),
     [workMetrics.data],
   );
+  const bugHeatmap = useMemo(() => (workMetrics.data as any)?.bug_heatmap ?? [], [workMetrics.data]);
+  const reopenStats = useMemo(() => (workMetrics.data as any)?.reopen_stats ?? null, [workMetrics.data]);
+  const [bugHeatmapPage, setBugHeatmapPage] = useState(1);
+  const BUG_HEATMAP_PAGE_SIZE = 10;
+
+  const sortedBugHeatmap = useMemo(() => {
+    const arr = Array.isArray(bugHeatmap) ? [...bugHeatmap] : [];
+    return arr.sort((a: any, b: any) => (b.total_issues ?? 0) - (a.total_issues ?? 0));
+  }, [bugHeatmap]);
+
+  useEffect(() => {
+    setBugHeatmapPage(1);
+  }, [bugHeatmap]);
+
+  const bugHeatmapTotal = sortedBugHeatmap.length;
+  const bugHeatmapPages = Math.max(1, Math.ceil(bugHeatmapTotal / BUG_HEATMAP_PAGE_SIZE));
+  const bugHeatmapPageItems = sortedBugHeatmap.slice((bugHeatmapPage - 1) * BUG_HEATMAP_PAGE_SIZE, bugHeatmapPage * BUG_HEATMAP_PAGE_SIZE);
   const resolveModuleRows = useMemo(
     () => moduleResolveToRows(workMetrics.data?.resolution.by_module ?? []),
     [workMetrics.data],
@@ -277,6 +294,9 @@ export default function App() {
   const [agingModalBucket, setAgingModalBucket] = useState<number | null>(null);
   const [agingModalItems, setAgingModalItems] = useState<Array<{ id: number; iid: number; title: string; labels: string[]; modules: string[]; module: string; duration_days: number }> | null>(null);
   const [agingModalLoading, setAgingModalLoading] = useState(false);
+  const [reopenModalCategory, setReopenModalCategory] = useState<string | null>(null);
+  const [reopenModalItems, setReopenModalItems] = useState<Array<{ id: number; iid: number; title: string; labels: string[]; modules: string[]; module: string; reopen_count: number }> | null>(null);
+  const [reopenModalLoading, setReopenModalLoading] = useState(false);
 
   const openAgingBucket = async (bucketIndex: number) => {
     setAgingModalBucket(bucketIndex);
@@ -295,6 +315,25 @@ export default function App() {
     setAgingModalBucket(null);
     setAgingModalItems(null);
     setAgingModalLoading(false);
+  };
+
+  const openReopenCategory = async (category: string) => {
+    setReopenModalCategory(category);
+    setReopenModalLoading(true);
+    try {
+      const r = await api.getReopenedIssues(category);
+      setReopenModalItems(r.items as any);
+    } catch (e) {
+      setReopenModalItems([]);
+    } finally {
+      setReopenModalLoading(false);
+    }
+  };
+
+  const closeReopenModal = () => {
+    setReopenModalCategory(null);
+    setReopenModalItems(null);
+    setReopenModalLoading(false);
   };
 
   const topModulesForChips = useMemo(() => {
@@ -462,7 +501,7 @@ export default function App() {
             <div style={{ width: "100%", height: 320 }}>
               <ResponsiveContainer>
                 <PieChart>
-                  <Pie data={statePie} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={52} outerRadius={88} paddingAngle={2}>
+                  <Pie data={statePie} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={52} outerRadius={88} paddingAngle={2} label={{ fill: '#ffffff' }}>
                     {statePie.map((e, i) => (
                       <Cell key={i} fill={stateColors[e.name] ?? "#94a3b8"} />
                     ))}
@@ -470,7 +509,7 @@ export default function App() {
                   <Tooltip
                     contentStyle={{ background: "#0f172a", border: "1px solid var(--border)", borderRadius: 8 }}
                   />
-                  <Legend />
+                  <Legend formatter={(value) => <span style={{ color: '#fff' }}>{String(value)}</span>} />
                 </PieChart>
               </ResponsiveContainer>
             </div>
@@ -624,31 +663,37 @@ export default function App() {
                     series={agingModuleChart.series}
                     height={260}
                   />
-                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, marginTop: 12 }}>
-                    <thead>
-                      <tr style={{ textAlign: "left", color: "var(--muted)" }}>
-                        <th style={th}>Age range</th>
-                        <th style={th}>Total</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                          {workMetrics.data.open_issue_aging.buckets.map((b, i) => (
-                            <tr key={b.range_label} style={{ borderTop: "1px solid var(--border)" }}>
-                              <td style={td}>{b.range_label}</td>
-                              <td style={td}>
-                                {b.total}{" "}
-                                <button
-                                  type="button"
-                                  onClick={() => void openAgingBucket(i)}
-                                  style={{ marginLeft: 8, padding: "6px 8px", borderRadius: 6, fontSize: 12 }}
-                                >
-                                  View
-                                </button>
-                              </td>
-                            </tr>
-                          ))}
-                    </tbody>
-                  </table>
+                  <div style={{ marginTop: 12 }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                      <thead>
+                        <tr style={{ textAlign: "left", color: "var(--muted)" }}>
+                          <th style={th}>Age range</th>
+                          <th style={th}>Total</th>
+                          <th style={th}></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {workMetrics.data.open_issue_aging.buckets.map((b, i) => (
+                          <tr key={b.range_label} style={{ borderTop: "1px solid var(--border)" }}>
+                            <td style={td}>{b.range_label}</td>
+                            <td style={td}>
+                              {b.total}{" "}
+                              
+                            </td>
+                            <td style={td}>
+                              <button
+                                type="button"
+                                onClick={() => void openAgingBucket(i)}
+                                style={ghostBtn}
+                              >
+                                View
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </>
               ) : (
                 !workMetrics.loading &&
@@ -724,6 +769,201 @@ export default function App() {
             </>
           )}
         </Panel>
+      </section>
+
+      <section style={{ display: "grid", gridTemplateColumns: "1fr 420px", gap: 16, marginBottom: 20 }}>
+        <Panel title="Bug heatmap per module" loading={workMetrics.loading} error={workMetrics.err}>
+          {bugHeatmap && bugHeatmap.length > 0 ? (
+            <div>
+              <p style={{ fontSize: 13, color: "var(--muted)", margin: "0 0 12px" }}>
+                Modules sorted by bug ratio (bug issues / total issues). High ratio with small totals can indicate
+                module-quality or architectural risk.
+              </p>
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                  <thead>
+                    <tr style={{ textAlign: "left", color: "var(--muted)" }}>
+                      <th style={th}>Module</th>
+                      <th style={th}>Bug ratio</th>
+                      <th style={th}>Bugs</th>
+                      <th style={th}>Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {bugHeatmapPageItems.map((h: any) => (
+                      <tr key={h.module} style={{ borderTop: "1px solid var(--border)" }}>
+                        <td style={td}>{h.module === "__Other__" ? "Other" : h.module}</td>
+                        <td style={td}>{Math.round(h.bug_ratio_percent)}%</td>
+                        <td style={td}>{h.bug_count}</td>
+                        <td style={td}>{h.total_issues}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {bugHeatmapTotal > BUG_HEATMAP_PAGE_SIZE && (
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8 }}>
+                  <div style={{ color: "var(--muted)", fontSize: 13 }}>
+                    Showing {(bugHeatmapPage - 1) * BUG_HEATMAP_PAGE_SIZE + 1}–{Math.min(bugHeatmapPage * BUG_HEATMAP_PAGE_SIZE, bugHeatmapTotal)} of {bugHeatmapTotal}
+                  </div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button type="button" disabled={bugHeatmapPage <= 1} onClick={() => setBugHeatmapPage((p) => Math.max(1, p - 1))} style={ghostBtn}>
+                      Previous
+                    </button>
+                    <div style={{ alignSelf: "center", color: "var(--muted)", fontSize: 13 }}>
+                      Page {bugHeatmapPage} / {bugHeatmapPages}
+                    </div>
+                    <button type="button" disabled={bugHeatmapPage >= bugHeatmapPages} onClick={() => setBugHeatmapPage((p) => Math.min(bugHeatmapPages, p + 1))} style={ghostBtn}>
+                      Next
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            !workMetrics.loading && !workMetrics.err && (
+              <div style={{ color: "var(--muted)", fontSize: 14 }}>
+                No data yet. Run <strong>Sync from GitLab</strong> to populate bug counts and module assignments.
+              </div>
+            )
+          )}
+        </Panel>
+
+        <Panel title="Reopened issue rate" loading={workMetrics.loading} error={workMetrics.err}>
+          {reopenStats ? (
+            <>
+              <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+                <div style={{ width: 220, height: 220 }}>
+                  <ResponsiveContainer>
+                    <PieChart>
+                      <Pie
+                        data={[
+                          { name: "Resolved once", value: reopenStats.resolved_once },
+                          { name: "Reopened once", value: reopenStats.reopened_once },
+                          { name: ">2x reopened", value: reopenStats.reopened_more_than_two },
+                        ]}
+                        dataKey="value"
+                        nameKey="name"
+                        cx="50%"
+                        cy="50%"
+                        innerRadius={38}
+                        outerRadius={72}
+                        paddingAngle={2}
+                        label={{ fill: '#ffffff' }}
+                      >
+                        <Cell fill="#22c55e" />
+                        <Cell fill="#f59e0b" />
+                        <Cell fill="#ef4444" />
+                      </Pie>
+                      <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid var(--border)", borderRadius: 8 }} />
+                      <Legend formatter={(value) => <span style={{ color: '#fff' }}>{String(value)}</span>} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+                <div style={{ fontSize: 13 }}>
+                  <div style={{ marginBottom: 8 }}>Total issues: {reopenStats.total_issues}</div>
+                  <div style={{ marginBottom: 6 }}>Resolved once: {reopenStats.resolved_once}</div>
+                  <div style={{ marginBottom: 6 }}>Reopened once: {reopenStats.reopened_once}</div>
+                  <div>Reopened &gt;2x: {reopenStats.reopened_more_than_two}</div>
+                </div>
+              </div>
+              <div style={{ marginTop: 12 }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                  <thead>
+                    <tr style={{ textAlign: "left", color: "var(--muted)" }}>
+                      <th style={th}>Category</th>
+                      <th style={th}>Count</th>
+                      <th style={th}></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr style={{ borderTop: "1px solid var(--border)" }}>
+                      <td style={td}>Resolved once</td>
+                      <td style={td}>{reopenStats.resolved_once}</td>
+                      <td style={td}><button type="button" onClick={() => void openReopenCategory('resolved_once')} style={ghostBtn}>View</button></td>
+                    </tr>
+                    <tr style={{ borderTop: "1px solid var(--border)" }}>
+                      <td style={td}>Reopened once</td>
+                      <td style={td}>{reopenStats.reopened_once}</td>
+                      <td style={td}><button type="button" onClick={() => void openReopenCategory('reopened_once')} style={ghostBtn}>View</button></td>
+                    </tr>
+                    <tr style={{ borderTop: "1px solid var(--border)" }}>
+                      <td style={td}>&gt;2x reopened</td>
+                      <td style={td}>{reopenStats.reopened_more_than_two}</td>
+                      <td style={td}><button type="button" onClick={() => void openReopenCategory('reopened_more')} style={ghostBtn}>View</button></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </>
+          ) : (
+            !workMetrics.loading && !workMetrics.err && (
+              <div style={{ color: "var(--muted)", fontSize: 14 }}>
+                No reopen data yet. Run <strong>Sync from GitLab</strong> to capture state events.
+              </div>
+            )
+          )}
+        </Panel>
+        {reopenModalCategory != null && (
+          <div
+            style={{
+              position: "fixed",
+              inset: 0,
+              background: "rgba(2,6,23,0.6)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              zIndex: 1200,
+            }}
+            onClick={closeReopenModal}
+          >
+            <div
+              style={{ width: "min(900px, 96%)", maxHeight: "80%", overflow: "auto", background: "var(--panel)", padding: 20, borderRadius: 10 }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                <div>
+                  <strong style={{ fontSize: 16 }}>{reopenModalCategory}</strong>
+                </div>
+                <div>
+                  <button type="button" onClick={closeReopenModal} style={{ padding: "6px 10px", borderRadius: 8 }}>
+                    Close
+                  </button>
+                </div>
+              </div>
+              <div>
+                {reopenModalLoading ? (
+                  <div style={{ color: "var(--muted)" }}>Loading…</div>
+                ) : reopenModalItems && reopenModalItems.length > 0 ? (
+                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                    <thead>
+                      <tr style={{ textAlign: "left", color: "var(--muted)" }}>
+                        <th style={th}>No. Tiket</th>
+                        <th style={th}>Title</th>
+                        <th style={th}>Labels</th>
+                        <th style={th}>Module</th>
+                        <th style={th}>Reopened Rate</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {reopenModalItems.map((it) => (
+                        <tr key={it.id} style={{ borderTop: "1px solid var(--border)" }}>
+                          <td style={td} className="mono">{it.iid}</td>
+                          <td style={td}><a href="#" onClick={(e) => e.preventDefault()}>{it.title}</a></td>
+                          <td style={td}>{(it.labels || []).join(", ")}</td>
+                          <td style={td}>{it.module}</td>
+                          <td style={td}>{it.reopen_count}x</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <div style={{ color: "var(--muted)" }}>No issues in this category.</div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
       </section>
 
       <section style={{ display: "grid", gap: 16, marginBottom: 20 }}>
@@ -858,7 +1098,7 @@ export default function App() {
                       {agingModalItems.map((it) => (
                         <tr key={it.id} style={{ borderTop: "1px solid var(--border)" }}>
                           <td style={td} className="mono">{it.iid}</td>
-                          <td style={td}><a href="#" onClick={(e)=>e.preventDefault()}>{it.title}</a></td>
+                          <td style={td}><a href="#" onClick={(e) => e.preventDefault()}>{it.title}</a></td>
                           <td style={td}>{(it.labels || []).join(", ")}</td>
                           <td style={td}>{it.module}</td>
                           <td style={td}>{it.duration_days} days</td>

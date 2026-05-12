@@ -58,6 +58,17 @@ type IssueLabelEvent struct {
 	RawJSON        []byte
 }
 
+type IssueStateEvent struct {
+	ID             int64
+	ProjectID      int64
+	IssueID        int64
+	IssueIID       int
+	State          string
+	AuthorUsername sql.NullString
+	EventCreatedAt sql.NullTime
+	RawJSON        []byte
+}
+
 func OpenMySQL(dsn string) (*sql.DB, error) {
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
@@ -149,6 +160,23 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 			KEY idx_ile_issue (issue_id),
 			KEY idx_ile_project_iid (project_id, issue_iid),
 			KEY idx_ile_event_created_at (event_created_at)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+		`CREATE TABLE IF NOT EXISTS issue_state_events (
+			id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+			project_id BIGINT NOT NULL,
+			issue_id BIGINT NOT NULL,
+			issue_iid INT NOT NULL,
+			state VARCHAR(128) NOT NULL,
+			author_username VARCHAR(255) NULL,
+			event_created_at DATETIME(3) NULL,
+			raw_json JSON NULL,
+			created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+			CONSTRAINT fk_ise_project FOREIGN KEY (project_id) REFERENCES projects (id) ON DELETE CASCADE,
+			CONSTRAINT fk_ise_issue FOREIGN KEY (issue_id) REFERENCES issues (id) ON DELETE CASCADE,
+			KEY idx_ise_project (project_id),
+			KEY idx_ise_issue (issue_id),
+			KEY idx_ise_project_iid (project_id, issue_iid),
+			KEY idx_ise_event_created_at (event_created_at)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 	}
 	for _, s := range stmts {
@@ -244,6 +272,17 @@ func InsertIssueLabelEvent(ctx context.Context, db *sql.DB, e *IssueLabelEvent) 
 	return err
 }
 
+func InsertIssueStateEvent(ctx context.Context, db *sql.DB, e *IssueStateEvent) error {
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO issue_state_events (
+			project_id, issue_id, issue_iid, state, author_username, event_created_at, raw_json
+		) VALUES (?, ?, ?, ?, ?, ?, ?)
+	`,
+		e.ProjectID, e.IssueID, e.IssueIID, e.State, nullStr(e.AuthorUsername), nullTime(e.EventCreatedAt), e.RawJSON,
+	)
+	return err
+}
+
 func GetProject(ctx context.Context, db *sql.DB, id int64) (*Project, error) {
 	row := db.QueryRowContext(ctx, `
 		SELECT id, path_with_namespace, name, web_url, description, default_branch,
@@ -301,7 +340,7 @@ func ListIssuesFiltered(ctx context.Context, db *sql.DB, projectID int64, state,
 		SELECT id, project_id, iid, title, description, state, issue_type, web_url,
 			author_username, assignees_json, labels_json, modules_json, milestone_title,
 			created_at_gitlab, updated_at_gitlab, closed_at
-		FROM issues WHERE `+w+` ORDER BY updated_at_gitlab DESC`, args...)
+		FROM issues WHERE `+w+` ORDER BY iid DESC`, args...)
 	if err != nil {
 		return nil, 0, err
 	}
