@@ -21,7 +21,7 @@ const kindColors: Record<string, string> = {
   bug: "#f87171",
   feature: "#60a5fa",
   improvement: "#4ade80",
-  uncategorized: "#94a3b8",
+  others: "#94a3b8",
 };
 
 const stateColors: Record<string, string> = {
@@ -36,7 +36,7 @@ function moduleStatToChartRows(m: api.ModuleStat[]) {
     bug: row.by_kind.bug ?? 0,
     feature: row.by_kind.feature ?? 0,
     improvement: row.by_kind.improvement ?? 0,
-    uncategorized: row.by_kind.uncategorized ?? 0,
+    others: row.by_kind.others ?? 0,
     total: row.total,
     opened: row.opened,
   }));
@@ -65,7 +65,7 @@ function ModuleStackedBar({
           <Bar dataKey="bug" stackId="a" fill={kindColors.bug} name="Bug" />
           <Bar dataKey="feature" stackId="a" fill={kindColors.feature} name="Feature" />
           <Bar dataKey="improvement" stackId="a" fill={kindColors.improvement} name="Improvement" />
-          <Bar dataKey="uncategorized" stackId="a" fill={kindColors.uncategorized} name="Uncategorized" />
+          <Bar dataKey="others" stackId="a" fill={kindColors.others} name="Others" />
         </BarChart>
       </ResponsiveContainer>
     </div>
@@ -271,7 +271,7 @@ export default function App() {
   const bugHeatmap = useMemo(() => (workMetrics.data as any)?.bug_heatmap ?? [], [workMetrics.data]);
   const reopenStats = useMemo(() => (workMetrics.data as any)?.reopen_stats ?? null, [workMetrics.data]);
   const [bugHeatmapPage, setBugHeatmapPage] = useState(1);
-  const BUG_HEATMAP_PAGE_SIZE = 10;
+  const BUG_HEATMAP_PAGE_SIZE = 15;
 
   const sortedBugHeatmap = useMemo(() => {
     const arr = Array.isArray(bugHeatmap) ? [...bugHeatmap] : [];
@@ -584,7 +584,7 @@ export default function App() {
                 </div>
                 {trendForYear !== null && trendAllZero ? (
                   <p style={{ fontSize: 13, color: "var(--muted)", margin: "10px 0 0", lineHeight: 1.45 }}>
-                    No bug, feature, or improvement issues were created in this UTC year (or every issue was uncategorized).
+                    No bug, feature, or improvement issues were created in this UTC year (or every issue was Others).
                   </p>
                 ) : null}
               </>
@@ -1108,7 +1108,7 @@ export default function App() {
               <option value="bug">Bug</option>
               <option value="feature">Feature</option>
               <option value="improvement">Improvement</option>
-              <option value="uncategorized">Uncategorized</option>
+              <option value="others">Others</option>
             </select>
           </label>
           <label style={{ fontSize: 13, color: "var(--muted)" }}>

@@ -113,9 +113,9 @@ func IssueHasLabel(labels []string, filter string) bool {
 	return false
 }
 
-// KindFromIssueLabels returns bug | feature | improvement | uncategorized.
+// KindFromIssueLabels returns bug | feature | improvement | others.
 // When catalog is non-empty (from project_labels after sync), only labels that exist in GitLab
-// and are classified as bug/feature/improvement contribute; otherwise returns uncategorized.
+// and are classified as bug/feature/improvement contribute; otherwise returns others.
 // When catalog is empty, falls back to heuristics on issue label strings (legacy DB).
 func KindFromIssueLabels(labels []string, catalog map[string]string) string {
 	if len(catalog) > 0 {
@@ -130,7 +130,7 @@ func KindFromIssueLabels(labels []string, catalog map[string]string) string {
 				return "improvement"
 			}
 		}
-		return "uncategorized"
+		return "others"
 	}
 	for _, l := range labels {
 		switch WorkKindForGitLabLabelName(l) {
@@ -142,7 +142,7 @@ func KindFromIssueLabels(labels []string, catalog map[string]string) string {
 			return "improvement"
 		}
 	}
-	return "uncategorized"
+	return "others"
 }
 
 // WorkKindForGitLabLabelName maps a single label name to a work kind or "none".

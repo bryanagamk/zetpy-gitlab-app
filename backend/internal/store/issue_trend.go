@@ -73,7 +73,7 @@ func nextBucketStart(t time.Time, granularity string) time.Time {
 }
 
 // BuildIssueTrend counts issues by GitLab creation time and work kind (bug / feature / improvement).
-// Issues without created_at_gitlab are omitted. Uncategorized kinds are not included in the three series.
+// Issues without created_at_gitlab are omitted. Issues of kind "others" are not included in the three series.
 // If forYear is non-nil, only issues with created_at_gitlab in [Jan 1, Jan 1 next year) UTC are included,
 // and points cover every bucket in that calendar year (zeros where there were no issues).
 func BuildIssueTrend(ctx context.Context, db *sql.DB, projectID int64, granularity string, forYear *int) (*IssueTrend, error) {
