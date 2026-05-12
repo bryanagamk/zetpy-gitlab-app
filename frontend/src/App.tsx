@@ -72,22 +72,51 @@ function ModuleStackedBar({
   );
 }
 
-function agingBucketsToChartRows(buckets: api.AgingBucket[]) {
-  return buckets.map((b) => ({
-    name: b.range_label,
-    bug: b.by_kind.bug ?? 0,
-    feature: b.by_kind.feature ?? 0,
-    improvement: b.by_kind.improvement ?? 0,
-    uncategorized: b.by_kind.uncategorized ?? 0,
-    total: b.total,
+const agingModulePalette = ["#f87171", "#60a5fa", "#4ade80", "#fbbf24", "#a78bfa", "#22d3ee", "#fb923c", "#94a3b8"];
+
+type AgingModuleSeries = { dataKey: string; label: string; color: string };
+
+function buildAgingModuleChart(buckets: api.AgingBucket[]): { rows: Record<string, string | number>[]; series: AgingModuleSeries[] } {
+  const counts: Record<string, number> = {};
+  for (const b of buckets) {
+    for (const [m, c] of Object.entries(b.by_module ?? {})) {
+      counts[m] = (counts[m] ?? 0) + c;
+    }
+  }
+  const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const top = sorted.slice(0, 8).map(([m]) => m);
+  const series: AgingModuleSeries[] = top.map((mod, i) => ({
+    dataKey: `m_${i}`,
+    label: mod === "__Other__" ? "Other" : mod,
+    color: agingModulePalette[i % agingModulePalette.length]!,
   }));
+  const hasOther = sorted.length > top.length;
+  if (hasOther) {
+    series.push({ dataKey: "m_other", label: "Other modules", color: "#64748b" });
+  }
+  const rows = buckets.map((b) => {
+    const row: Record<string, string | number> = { name: b.range_label, total: b.total };
+    let sumTop = 0;
+    top.forEach((mod, i) => {
+      const v = b.by_module?.[mod] ?? 0;
+      row[`m_${i}`] = v;
+      sumTop += v;
+    });
+    if (hasOther) {
+      row.m_other = Math.max(0, b.total - sumTop);
+    }
+    return row;
+  });
+  return { rows, series };
 }
 
 function OpenIssueAgingStackedBar({
   data,
+  series,
   height = 280,
 }: {
-  data: ReturnType<typeof agingBucketsToChartRows>;
+  data: Record<string, string | number>[];
+  series: AgingModuleSeries[];
   height?: number;
 }) {
   return (
@@ -102,10 +131,9 @@ function OpenIssueAgingStackedBar({
             formatter={(value: number, name: string) => [value, name]}
           />
           <Legend />
-          <Bar dataKey="bug" stackId="age" fill={kindColors.bug} name="Bug" />
-          <Bar dataKey="feature" stackId="age" fill={kindColors.feature} name="Feature" />
-          <Bar dataKey="improvement" stackId="age" fill={kindColors.improvement} name="Improvement" />
-          <Bar dataKey="uncategorized" stackId="age" fill={kindColors.uncategorized} name="Uncategorized" />
+          {series.map((s) => (
+            <Bar key={s.dataKey} dataKey={s.dataKey} stackId="age" fill={s.color} name={s.label} />
+          ))}
         </BarChart>
       </ResponsiveContainer>
     </div>
@@ -141,7 +169,7 @@ function ModuleResolveTimeBar({
             labelFormatter={(_, p) => {
               const row = p?.[0]?.payload as { full?: string; count?: number } | undefined;
               if (!row) return "";
-              return row.count != null ? `${row.full ?? ""} (${row.count} closed)` : row.full ?? "";
+              return row.count != null ? `${row.full ?? ""} (${row.count} issues)` : row.full ?? "";
             }}
           />
           <Bar dataKey="avg" fill="#22d3ee" name="Avg resolve (days)" radius={[0, 4, 4, 0]} />
@@ -232,16 +260,25 @@ export default function App() {
     return pts.every((p) => p.bug + p.feature + p.improvement === 0);
   }, [issueTrend.data]);
 
-  const agingChartRows = useMemo(
-    () => agingBucketsToChartRows(workMetrics.data?.open_issue_aging.buckets ?? []),
+  const agingModuleChart = useMemo(
+    () => buildAgingModuleChart(workMetrics.data?.open_issue_aging.buckets ?? []),
     [workMetrics.data],
   );
-  const agingGrandTotal = useMemo(() => agingChartRows.reduce((s, r) => s + r.total, 0), [agingChartRows]);
+  const agingGrandTotal = useMemo(
+    () => (workMetrics.data?.open_issue_aging.buckets ?? []).reduce((s, b) => s + b.total, 0),
+    [workMetrics.data],
+  );
   const resolveModuleRows = useMemo(
     () => moduleResolveToRows(workMetrics.data?.resolution.by_module ?? []),
     [workMetrics.data],
   );
   const resolveBarHeight = useMemo(() => Math.min(360, Math.max(160, 28 * resolveModuleRows.length + 40)), [resolveModuleRows.length]);
+
+  const topModulesForChips = useMemo(() => {
+    const rows = [...(dash.data?.by_module ?? [])];
+    rows.sort((a, b) => b.total - a.total || a.module.localeCompare(b.module));
+    return rows.slice(0, 40).map((m) => ({ module: m.module, count: m.total }));
+  }, [dash.data]);
 
   const statePie = useMemo(() => {
     const b = dash.data?.by_state ?? {};
@@ -549,15 +586,21 @@ export default function App() {
           {workMetrics.data && (
             <>
               <p style={{ fontSize: 13, color: "var(--muted)", margin: "0 0 12px", lineHeight: 1.45 }}>
-                Open issues only, bucketed by days since <strong>GitLab creation</strong> (UTC, day-based). Older buckets
-                often signal mounting technical debt and a "busy but not closing" backlog.
+                Open issues only, bucketed by days since <strong>GitLab creation</strong> (UTC, day-based). Stacks show
+                the <strong>first module segment</strong> (same rules as the dashboard: title <span className="mono">[…]</span>{" "}
+                tags and label fallbacks)—not work-kind labels. Up to eight largest modules are shown; the rest roll into{" "}
+                <strong>Other modules</strong>.
               </p>
               <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8 }}>
                 Snapshot: {formatDate(workMetrics.data.open_issue_aging.as_of)}
               </div>
               {agingGrandTotal > 0 ? (
                 <>
-                  <OpenIssueAgingStackedBar data={agingChartRows} height={260} />
+                  <OpenIssueAgingStackedBar
+                    data={agingModuleChart.rows}
+                    series={agingModuleChart.series}
+                    height={260}
+                  />
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, marginTop: 12 }}>
                     <thead>
                       <tr style={{ textAlign: "left", color: "var(--muted)" }}>
@@ -591,9 +634,13 @@ export default function App() {
           {workMetrics.data && (
             <>
               <p style={{ fontSize: 13, color: "var(--muted)", margin: "0 0 12px", lineHeight: 1.45 }}>
-                Closed issues only: average <strong>calendar days</strong> from GitLab <span className="mono">created</span>{" "}
-                to <span className="mono">closed</span> (UTC). Per module uses the <strong>first</strong> module segment;
-                modules with fewer than 2 closed issues are omitted from the chart.
+                Average <strong>calendar days</strong> from GitLab <span className="mono">created</span> to an{" "}
+                <strong>end time</strong> derived from your workflow: the <span className="mono">close</span> label means
+                fully done; <span className="mono">in-live</span> (and variants) means solved / live; GitLab{" "}
+                <span className="mono">closed</span> still counts when there is no workflow label. End time prefers{" "}
+                <span className="mono">closed_at</span>, otherwise <span className="mono">updated_at</span> (approximate
+                when labels moved on still-open issues). Per module uses the <strong>first</strong> module segment;
+                modules with fewer than 2 qualifying issues are omitted from the chart.
               </p>
               {workMetrics.data.resolution.closed_issues_used > 0 ? (
                 <>
@@ -609,7 +656,7 @@ export default function App() {
                     <div style={{ padding: "10px 12px", borderRadius: 10, background: "var(--panel-2)", border: "1px solid var(--border)" }}>
                       <div style={{ color: "var(--muted)", fontSize: 12 }}>Avg resolve (all)</div>
                       <div style={{ fontWeight: 700, fontSize: 22 }}>{workMetrics.data.resolution.avg_resolve_days_all.toFixed(1)}</div>
-                      <div style={{ color: "var(--muted)", fontSize: 12 }}>days · n={workMetrics.data.resolution.closed_issues_used}</div>
+                      <div style={{ color: "var(--muted)", fontSize: 12 }}>{workMetrics.data.resolution.closed_issues_used} issues</div>
                     </div>
                     <div style={{ padding: "10px 12px", borderRadius: 10, background: "var(--panel-2)", border: "1px solid var(--border)" }}>
                       <div style={{ color: "var(--muted)", fontSize: 12 }}>Avg resolve (bugs)</div>
@@ -619,7 +666,7 @@ export default function App() {
                           : "—"}
                       </div>
                       <div style={{ color: "var(--muted)", fontSize: 12 }}>
-                        days · n={workMetrics.data.resolution.closed_bugs_used}
+                        {workMetrics.data.resolution.closed_bugs_used} bug issues
                       </div>
                     </div>
                   </div>
@@ -627,7 +674,7 @@ export default function App() {
                     <ModuleResolveTimeBar data={resolveModuleRows} height={resolveBarHeight} />
                   ) : (
                     <div style={{ color: "var(--muted)", fontSize: 14 }}>
-                      No module has at least 2 closed issues with valid timestamps (try syncing more history).
+                      No module has at least 2 qualifying issues for comparison (see workflow rules above).
                     </div>
                   )}
                 </>
@@ -635,8 +682,10 @@ export default function App() {
                 !workMetrics.loading &&
                 !workMetrics.err && (
                   <div style={{ color: "var(--muted)", fontSize: 14 }}>
-                    No closed issues with both <span className="mono">created_at_gitlab</span> and{" "}
-                    <span className="mono">closed_at</span>. Run <strong>Sync from GitLab</strong> after issues are closed in GitLab.
+                    No issues qualify yet: add workflow labels <span className="mono">in-live</span> or{" "}
+                    <span className="mono">close</span>, close issues in GitLab, or sync so{" "}
+                    <span className="mono">created_at_gitlab</span> and <span className="mono">updated_at_gitlab</span> are
+                    present.
                   </div>
                 )
               )}
@@ -645,40 +694,88 @@ export default function App() {
         </Panel>
       </section>
 
-      <Panel title="Most common labels" loading={dash.loading} error={dash.err}>
-        <>
-          <p style={{ fontSize: 13, color: "var(--muted)", margin: "0 0 12px", lineHeight: 1.45 }}>
-            Click a label to filter the issue list below. Click the same label again to clear the filter.
-          </p>
-          {dash.data && (
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-              {dash.data.top_labels.map((t) => {
-                const active = issueLabel === t.label;
-                return (
-                  <button
-                    key={t.label}
-                    type="button"
-                    onClick={() => setIssueLabel((prev) => (prev === t.label ? "" : t.label))}
-                    style={{
-                      padding: "6px 10px",
-                      borderRadius: 8,
-                      background: active ? "rgba(34, 211, 238, 0.12)" : "var(--panel-2)",
-                      border: active ? "2px solid var(--accent-2)" : "1px solid var(--border)",
-                      fontSize: 13,
-                      color: "var(--text)",
-                      cursor: "pointer",
-                      textAlign: "left",
-                    }}
-                  >
-                    <span className="mono">{t.label}</span>
-                    <span style={{ color: "var(--muted)", marginLeft: 8 }}>{t.count}</span>
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </>
-      </Panel>
+      <section style={{ display: "grid", gap: 16, marginBottom: 20 }}>
+        <Panel title="Most common modules" loading={dash.loading} error={dash.err}>
+          <>
+            <p style={{ fontSize: 13, color: "var(--muted)", margin: "0 0 12px", lineHeight: 1.45 }}>
+              Same module aggregation as the dashboard chart (title <span className="mono">[…]</span> segments and label fallbacks).
+              Click a module to filter the issue list below; click again to clear. You can still refine with the Module text field.
+            </p>
+            {dash.data && topModulesForChips.length > 0 ? (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {topModulesForChips.map((t) => {
+                  const active = issueModule === t.module;
+                  const shown = t.module.length > 40 ? t.module.slice(0, 39) + "…" : t.module;
+                  return (
+                    <button
+                      key={t.module}
+                      type="button"
+                      onClick={() => setIssueModule((prev) => (prev === t.module ? "" : t.module))}
+                      style={{
+                        padding: "6px 10px",
+                        borderRadius: 8,
+                        background: active ? "rgba(34, 211, 238, 0.12)" : "var(--panel-2)",
+                        border: active ? "2px solid var(--accent-2)" : "1px solid var(--border)",
+                        fontSize: 13,
+                        color: "var(--text)",
+                        cursor: "pointer",
+                        textAlign: "left",
+                        maxWidth: "100%",
+                      }}
+                      title={t.module}
+                    >
+                      <span className="mono">{shown}</span>
+                      <span style={{ color: "var(--muted)", marginLeft: 8 }}>{t.count}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              !dash.loading &&
+              !dash.err && (
+                <div style={{ color: "var(--muted)", fontSize: 14 }}>
+                  No module aggregates yet. Run <strong>Sync from GitLab</strong> after issues include title segments or module labels.
+                </div>
+              )
+            )}
+          </>
+        </Panel>
+
+        <Panel title="Most common labels" loading={dash.loading} error={dash.err}>
+          <>
+            <p style={{ fontSize: 13, color: "var(--muted)", margin: "0 0 12px", lineHeight: 1.45 }}>
+              Click a label to filter the issue list below. Click the same label again to clear the filter.
+            </p>
+            {dash.data && (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {dash.data.top_labels.map((t) => {
+                  const active = issueLabel === t.label;
+                  return (
+                    <button
+                      key={t.label}
+                      type="button"
+                      onClick={() => setIssueLabel((prev) => (prev === t.label ? "" : t.label))}
+                      style={{
+                        padding: "6px 10px",
+                        borderRadius: 8,
+                        background: active ? "rgba(34, 211, 238, 0.12)" : "var(--panel-2)",
+                        border: active ? "2px solid var(--accent-2)" : "1px solid var(--border)",
+                        fontSize: 13,
+                        color: "var(--text)",
+                        cursor: "pointer",
+                        textAlign: "left",
+                      }}
+                    >
+                      <span className="mono">{t.label}</span>
+                      <span style={{ color: "var(--muted)", marginLeft: 8 }}>{t.count}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </>
+        </Panel>
+      </section>
 
       <section style={{ marginTop: 28 }}>
         <h2 style={{ fontSize: "1.15rem", margin: "0 0 12px" }}>Issue list</h2>
@@ -719,6 +816,14 @@ export default function App() {
               Label filter: <span className="mono">{issueLabel}</span>{" "}
               <button type="button" onClick={() => setIssueLabel("")} style={ghostBtn}>
                 Clear label
+              </button>
+            </span>
+          ) : null}
+          {issueModule ? (
+            <span style={{ fontSize: 13, color: "var(--muted)" }}>
+              Module filter: <span className="mono">{issueModule}</span>{" "}
+              <button type="button" onClick={() => setIssueModule("")} style={ghostBtn}>
+                Clear module
               </button>
             </span>
           ) : null}

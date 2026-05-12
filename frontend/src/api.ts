@@ -54,7 +54,7 @@ export type AgingBucket = {
   min_days: number;
   max_days?: number;
   total: number;
-  by_kind: Record<string, number>;
+  by_module: Record<string, number>;
 };
 
 export type OpenIssueAging = {
@@ -73,6 +73,7 @@ export type ResolutionInsights = {
   avg_resolve_days_bugs?: number;
   closed_issues_used: number;
   closed_bugs_used: number;
+  resolution_basis?: string;
   by_module: ModuleResolveStat[];
 };
 

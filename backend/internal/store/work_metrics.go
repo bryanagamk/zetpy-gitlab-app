@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"math"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -13,39 +14,40 @@ const otherModule = "__Other__"
 
 // WorkMetrics bundles backlog aging and closed-issue resolution stats.
 type WorkMetrics struct {
-	OpenIssueAging      OpenIssueAging      `json:"open_issue_aging"`
-	ResolutionInsights  ResolutionInsights  `json:"resolution"`
+	OpenIssueAging     OpenIssueAging     `json:"open_issue_aging"`
+	ResolutionInsights ResolutionInsights `json:"resolution"`
 }
 
 // AgingBucket is one age range for still-open issues.
 type AgingBucket struct {
-	RangeLabel string `json:"range_label"`
-	MinDays    int    `json:"min_days"`
-	MaxDays    *int   `json:"max_days,omitempty"` // nil = no upper bound
-	Total      int    `json:"total"`
-	ByKind     map[string]int `json:"by_kind"`
+	RangeLabel string         `json:"range_label"`
+	MinDays    int            `json:"min_days"`
+	MaxDays    *int           `json:"max_days,omitempty"` // nil = no upper bound
+	Total      int            `json:"total"`
+	ByModule   map[string]int `json:"by_module"` // first module segment per issue (same rules as dashboard modules)
 }
 
 // OpenIssueAging counts opened issues by age since GitLab creation (UTC day-based).
 type OpenIssueAging struct {
-	AsOfRFC3339 string         `json:"as_of"`
-	Buckets      []AgingBucket  `json:"buckets"`
+	AsOfRFC3339 string        `json:"as_of"`
+	Buckets     []AgingBucket `json:"buckets"`
 }
 
-// ModuleResolveStat is average time to close for issues attributed to a module.
+// ModuleResolveStat is average lead time for issues attributed to a module.
 type ModuleResolveStat struct {
 	Module         string  `json:"module"`
 	AvgResolveDays float64 `json:"avg_resolve_days"`
-	ClosedCount    int     `json:"closed_count"`
+	ClosedCount    int     `json:"closed_count"` // issues in the resolution sample (see resolution_basis)
 }
 
-// ResolutionInsights summarizes lead/resolution time for closed issues.
+// ResolutionInsights summarizes lead / resolution time using GitLab dates plus workflow labels.
 type ResolutionInsights struct {
-	AvgResolveDaysAll   float64             `json:"avg_resolve_days_all"`
-	AvgResolveDaysBugs  *float64            `json:"avg_resolve_days_bugs,omitempty"`
-	ClosedIssuesUsed    int                 `json:"closed_issues_used"`
-	ClosedBugsUsed      int                 `json:"closed_bugs_used"`
-	ByModule            []ModuleResolveStat `json:"by_module"`
+	AvgResolveDaysAll  float64             `json:"avg_resolve_days_all"`
+	AvgResolveDaysBugs *float64            `json:"avg_resolve_days_bugs,omitempty"`
+	ClosedIssuesUsed   int                 `json:"closed_issues_used"` // count of issues in the averages
+	ClosedBugsUsed     int                 `json:"closed_bugs_used"`
+	ResolutionBasis    string              `json:"resolution_basis"`
+	ByModule           []ModuleResolveStat `json:"by_module"`
 }
 
 func ageBucketIndex(ageDays int) int {
@@ -66,10 +68,10 @@ func openAgingBucketDefs() []AgingBucket {
 	max30 := 30
 	max90 := 90
 	return []AgingBucket{
-		{RangeLabel: "0–7 days", MinDays: 0, MaxDays: &max7, ByKind: map[string]int{}},
-		{RangeLabel: "7–30 days", MinDays: 7, MaxDays: &max30, ByKind: map[string]int{}},
-		{RangeLabel: "30–90 days", MinDays: 30, MaxDays: &max90, ByKind: map[string]int{}},
-		{RangeLabel: ">90 days", MinDays: 91, MaxDays: nil, ByKind: map[string]int{}},
+		{RangeLabel: "0–7 days", MinDays: 0, MaxDays: &max7, ByModule: map[string]int{}},
+		{RangeLabel: "7–30 days", MinDays: 7, MaxDays: &max30, ByModule: map[string]int{}},
+		{RangeLabel: "30–90 days", MinDays: 30, MaxDays: &max90, ByModule: map[string]int{}},
+		{RangeLabel: ">90 days", MinDays: 91, MaxDays: nil, ByModule: map[string]int{}},
 	}
 }
 
@@ -89,9 +91,9 @@ func BuildWorkMetrics(ctx context.Context, db *sql.DB, projectID int64) (*WorkMe
 		ResolutionInsights: ResolutionInsights{ByModule: nil},
 	}
 
-	// --- Open issue aging ---
+	// --- Open issue aging (by first module segment; not by work-kind labels) ---
 	rowsOpen, err := db.QueryContext(ctx, `
-		SELECT labels_json, created_at_gitlab
+		SELECT title, labels_json, modules_json, created_at_gitlab
 		FROM issues
 		WHERE project_id = ? AND state = 'opened' AND created_at_gitlab IS NOT NULL
 	`, projectID)
@@ -101,9 +103,10 @@ func BuildWorkMetrics(ctx context.Context, db *sql.DB, projectID int64) (*WorkMe
 	defer rowsOpen.Close()
 
 	for rowsOpen.Next() {
-		var labelsJSON []byte
+		var title string
+		var labelsJSON, modulesJSON []byte
 		var created sql.NullTime
-		if err := rowsOpen.Scan(&labelsJSON, &created); err != nil {
+		if err := rowsOpen.Scan(&title, &labelsJSON, &modulesJSON, &created); err != nil {
 			return nil, err
 		}
 		if !created.Valid {
@@ -117,15 +120,22 @@ func BuildWorkMetrics(ctx context.Context, db *sql.DB, projectID int64) (*WorkMe
 		bi := ageBucketIndex(ageDays)
 		var labels []string
 		_ = json.Unmarshal(labelsJSON, &labels)
-		k := KindFromIssueLabels(labels, catalog)
+		mods := ModulesForIssueRow(title, labels, modulesJSON)
+		mod := otherModule
+		if len(mods) > 0 {
+			mod = strings.TrimSpace(mods[0])
+			if mod == "" {
+				mod = otherModule
+			}
+		}
 		out.OpenIssueAging.Buckets[bi].Total++
-		out.OpenIssueAging.Buckets[bi].ByKind[k]++
+		out.OpenIssueAging.Buckets[bi].ByModule[mod]++
 	}
 	if err := rowsOpen.Err(); err != nil {
 		return nil, err
 	}
 
-	// --- Resolution (closed issues) ---
+	// --- Resolution: GitLab closed_at and/or workflow labels in-live, close ---
 	type modAgg struct {
 		sumDays float64
 		n       int
@@ -134,32 +144,31 @@ func BuildWorkMetrics(ctx context.Context, db *sql.DB, projectID int64) (*WorkMe
 	var sumAll, sumBugs float64
 	var nAll, nBugs int
 
-	rowsClosed, err := db.QueryContext(ctx, `
-		SELECT labels_json, title, modules_json, created_at_gitlab, closed_at
+	rowsRes, err := db.QueryContext(ctx, `
+		SELECT labels_json, title, modules_json, state, created_at_gitlab, closed_at, updated_at_gitlab
 		FROM issues
-		WHERE project_id = ? AND state = 'closed'
-		  AND created_at_gitlab IS NOT NULL AND closed_at IS NOT NULL
-		  AND closed_at >= created_at_gitlab
+		WHERE project_id = ? AND created_at_gitlab IS NOT NULL AND updated_at_gitlab IS NOT NULL
 	`, projectID)
 	if err != nil {
 		return nil, err
 	}
-	defer rowsClosed.Close()
+	defer rowsRes.Close()
 
-	for rowsClosed.Next() {
+	for rowsRes.Next() {
 		var labelsJSON []byte
-		var title string
+		var title, state string
 		var modulesJSON []byte
-		var created, closed sql.NullTime
-		if err := rowsClosed.Scan(&labelsJSON, &title, &modulesJSON, &created, &closed); err != nil {
+		var created, closed, updated sql.NullTime
+		if err := rowsRes.Scan(&labelsJSON, &title, &modulesJSON, &state, &created, &closed, &updated); err != nil {
 			return nil, err
-		}
-		if !created.Valid || !closed.Valid {
-			continue
 		}
 		var labels []string
 		_ = json.Unmarshal(labelsJSON, &labels)
-		days := closed.Time.UTC().Sub(created.Time.UTC()).Hours() / 24
+		end, ok := effectiveResolutionEnd(state, labels, created, closed, updated)
+		if !ok {
+			continue
+		}
+		days := end.Sub(created.Time.UTC()).Hours() / 24
 		if days < 0 {
 			continue
 		}
@@ -180,15 +189,15 @@ func BuildWorkMetrics(ctx context.Context, db *sql.DB, projectID int64) (*WorkMe
 		if mod == "" {
 			mod = otherModule
 		}
-		ma, ok := modMap[mod]
-		if !ok {
+		ma, okM := modMap[mod]
+		if !okM {
 			ma = &modAgg{}
 			modMap[mod] = ma
 		}
 		ma.sumDays += days
 		ma.n++
 	}
-	if err := rowsClosed.Err(); err != nil {
+	if err := rowsRes.Err(); err != nil {
 		return nil, err
 	}
 
@@ -224,6 +233,42 @@ func BuildWorkMetrics(ctx context.Context, db *sql.DB, projectID int64) (*WorkMe
 		modStats = modStats[:15]
 	}
 	out.ResolutionInsights.ByModule = modStats
+	out.ResolutionInsights.ResolutionBasis = "End = GitLab closed_at when available; otherwise GitLab updated_at when the issue qualifies: workflow label close (fully done), GitLab state closed, or workflow in-live (solved / live). Exact label-change times are not stored; updated_at approximates the last move for open issues."
 
 	return out, nil
+}
+
+func effectiveResolutionEnd(state string, labels []string, created, closed, updated sql.NullTime) (time.Time, bool) {
+	if !created.Valid || !updated.Valid {
+		return time.Time{}, false
+	}
+	c := created.Time.UTC()
+	u := updated.Time.UTC()
+	if u.Before(c) {
+		return time.Time{}, false
+	}
+	hasClose := LabelIndicatesWorkflowClose(labels)
+	hasLive := LabelIndicatesInLive(labels)
+	isClosed := strings.EqualFold(strings.TrimSpace(state), "closed")
+	closedOK := closed.Valid && !closed.Time.UTC().Before(c)
+
+	switch {
+	case hasClose:
+		if closedOK {
+			return closed.Time.UTC(), true
+		}
+		return u, true
+	case isClosed:
+		if closedOK {
+			return closed.Time.UTC(), true
+		}
+		return u, true
+	case hasLive:
+		if closedOK {
+			return closed.Time.UTC(), true
+		}
+		return u, true
+	default:
+		return time.Time{}, false
+	}
 }

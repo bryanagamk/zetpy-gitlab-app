@@ -178,3 +178,29 @@ func containsAny(s string, needles []string) bool {
 	}
 	return false
 }
+
+// LabelIndicatesInLive reports whether any label marks the issue as live / shipped (workflow solved).
+// Matching is case-insensitive; common variants: in-live, in live, in_live.
+func LabelIndicatesInLive(labels []string) bool {
+	for _, l := range labels {
+		x := strings.ToLower(strings.TrimSpace(l))
+		if x == "in-live" || x == "in live" || x == "in_live" || x == "inlive" {
+			return true
+		}
+		if strings.Contains(x, "in-live") {
+			return true
+		}
+	}
+	return false
+}
+
+// LabelIndicatesWorkflowClose reports whether any label marks total workflow completion (not GitLab state).
+// Matches the label name close (case-insensitive). Use a dedicated workflow label in GitLab.
+func LabelIndicatesWorkflowClose(labels []string) bool {
+	for _, l := range labels {
+		if strings.EqualFold(strings.TrimSpace(l), "close") {
+			return true
+		}
+	}
+	return false
+}
