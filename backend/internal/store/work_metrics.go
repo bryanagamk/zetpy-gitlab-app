@@ -177,10 +177,17 @@ func BuildWorkMetrics(ctx context.Context, db *sql.DB, projectID int64) (*WorkMe
 	var sumAll, sumBugs float64
 	var nAll, nBugs int
 
+	// --- Resolution: compute lead/resolve time using label events similar to OpenIssueAging ---
+	// Start = first activity (min label event) or created_at_gitlab; End = In Live 'add' event time.
+	// Only include issues that have an In Live add (i.e., Completed).
 	rowsRes, err := db.QueryContext(ctx, `
-		SELECT labels_json, title, modules_json, state, created_at_gitlab, closed_at, updated_at_gitlab
-		FROM issues
-		WHERE project_id = ? AND created_at_gitlab IS NOT NULL AND updated_at_gitlab IS NOT NULL
+		SELECT i.id, i.title, i.labels_json, i.modules_json, i.created_at_gitlab,
+			MIN(e.event_created_at) AS first_activity,
+			MIN(CASE WHEN (LOWER(TRIM(e.label_name)) IN ('in-live','in live','in_live','inlive')) AND LOWER(TRIM(e.action)) = 'add' THEN e.event_created_at END) AS in_live_at
+		FROM issues i
+		LEFT JOIN issue_label_events e ON e.issue_id = i.id
+		WHERE i.project_id = ? AND i.created_at_gitlab IS NOT NULL
+		GROUP BY i.id, i.title, i.labels_json, i.modules_json, i.created_at_gitlab
 	`, projectID)
 	if err != nil {
 		return nil, err
@@ -188,20 +195,37 @@ func BuildWorkMetrics(ctx context.Context, db *sql.DB, projectID int64) (*WorkMe
 	defer rowsRes.Close()
 
 	for rowsRes.Next() {
+		var title string
 		var labelsJSON []byte
-		var title, state string
 		var modulesJSON []byte
-		var created, closed, updated sql.NullTime
-		if err := rowsRes.Scan(&labelsJSON, &title, &modulesJSON, &state, &created, &closed, &updated); err != nil {
+		var created sql.NullTime
+		var firstActivity sql.NullTime
+		var inLive sql.NullTime
+		if err := rowsRes.Scan(&sql.NullInt64{}, &title, &labelsJSON, &modulesJSON, &created, &firstActivity, &inLive); err != nil {
 			return nil, err
 		}
 		var labels []string
 		_ = json.Unmarshal(labelsJSON, &labels)
-		end, ok := effectiveResolutionEnd(state, labels, created, closed, updated)
-		if !ok {
+
+		// baseline
+		var baseline time.Time
+		if firstActivity.Valid {
+			baseline = firstActivity.Time.UTC()
+		} else if created.Valid {
+			baseline = created.Time.UTC()
+		} else {
 			continue
 		}
-		days := end.Sub(created.Time.UTC()).Hours() / 24
+
+		// require inLive (completed)
+		if !inLive.Valid {
+			continue
+		}
+		end := inLive.Time.UTC()
+		if end.Before(baseline) {
+			continue
+		}
+		days := end.Sub(baseline).Hours() / 24
 		if days < 0 {
 			continue
 		}
@@ -266,7 +290,7 @@ func BuildWorkMetrics(ctx context.Context, db *sql.DB, projectID int64) (*WorkMe
 		modStats = modStats[:15]
 	}
 	out.ResolutionInsights.ByModule = modStats
-	out.ResolutionInsights.ResolutionBasis = "End = GitLab closed_at when available; otherwise GitLab updated_at when the issue qualifies: workflow label close (fully done), GitLab state closed, or workflow in-live (solved / live). Exact label-change times are not stored; updated_at approximates the last move for open issues."
+	out.ResolutionInsights.ResolutionBasis = "End = In Live 'add' event timestamp; Start = first label activity (min label event) or created_at_gitlab. Issues without an In Live add are excluded from these resolution stats."
 
 	return out, nil
 }
