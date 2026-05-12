@@ -175,3 +175,10 @@ export async function getIssues(params: {
   const res = await fetch(`${prefix}/api/issues?${q.toString()}`);
   return parseJSON(res);
 }
+
+export async function getAgingBucketIssues(bucket: number): Promise<{ items: { id: number; iid: number; title: string; labels: string[]; modules: string[]; module: string; duration_days: number }[]; total: number }> {
+  const q = new URLSearchParams();
+  q.set("bucket", String(bucket));
+  const res = await fetch(`${prefix}/api/dashboard/open-aging/issues?${q.toString()}`);
+  return parseJSON(res);
+}

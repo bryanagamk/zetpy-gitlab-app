@@ -136,17 +136,14 @@ func BuildWorkMetrics(ctx context.Context, db *sql.DB, projectID int64) (*WorkMe
 			continue
 		}
 
-		var end time.Time
-		if inLiveAt.Valid {
-			end = inLiveAt.Time.UTC()
-			if end.Before(baseline) {
-				// corrupt data, skip
-				continue
-			}
-		} else {
-			end = asOf
+		// only include issues that have an In Live 'add' event; others are in-progress and excluded
+		if !inLiveAt.Valid {
+			continue
 		}
-
+		end := inLiveAt.Time.UTC()
+		if end.Before(baseline) {
+			continue
+		}
 		daysFloat := end.Sub(baseline).Hours() / 24
 		if daysFloat < 0 {
 			continue

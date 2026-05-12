@@ -40,10 +40,10 @@ func (s *Server) PostSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"project_id":      proj.ID,
-		"issues_synced":   n,
-		"labels_synced":   nLabels,
-		"last_synced_at":  proj.LastSyncedAt.Time,
+		"project_id":     proj.ID,
+		"issues_synced":  n,
+		"labels_synced":  nLabels,
+		"last_synced_at": proj.LastSyncedAt.Time,
 	})
 }
 
@@ -63,17 +63,17 @@ func (s *Server) GetProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"id":                   p.ID,
+		"id":                  p.ID,
 		"path_with_namespace": p.PathWithNamespace,
-		"name":                 p.Name,
-		"web_url":              p.WebURL,
-		"description":          nullString(p.Description),
-		"default_branch":       nullString(p.DefaultBranch),
-		"star_count":           p.StarCount,
-		"forks_count":          p.ForksCount,
-		"open_issues_count":    p.OpenIssuesCount,
-		"visibility":           nullString(p.Visibility),
-		"last_synced_at":       nullTime(p.LastSyncedAt),
+		"name":                p.Name,
+		"web_url":             p.WebURL,
+		"description":         nullString(p.Description),
+		"default_branch":      nullString(p.DefaultBranch),
+		"star_count":          p.StarCount,
+		"forks_count":         p.ForksCount,
+		"open_issues_count":   p.OpenIssuesCount,
+		"visibility":          nullString(p.Visibility),
+		"last_synced_at":      nullTime(p.LastSyncedAt),
 	})
 }
 
@@ -157,6 +157,89 @@ func (s *Server) GetWorkMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, m)
+}
+
+func (s *Server) GetOpenAgingIssues(w http.ResponseWriter, r *http.Request) {
+	id, err := store.FirstProjectID(r.Context(), s.DB)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			writeErr(w, http.StatusNotFound, "no data yet; run POST /api/sync")
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	bucketStr := r.URL.Query().Get("bucket")
+	// bucket can be index (0..3) or range label; prefer index
+	bucket := -1
+	if bucketStr != "" {
+		if b, err := strconv.Atoi(bucketStr); err == nil {
+			bucket = b
+		}
+	}
+	details, err := store.ListIssuesAgingDetails(r.Context(), s.DB, id)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// if bucket specified, filter
+	if bucket >= 0 {
+		// compute bucket index locally (same logic as work_metrics.ageBucketIndex)
+		filtered := make([]AgingIssueDTO, 0, len(details))
+		for _, d := range details {
+			// skip in-progress issues (no In Live add)
+			if !d.Completed {
+				continue
+			}
+			bi := func(ageDays int) int {
+				switch {
+				case ageDays < 7:
+					return 0
+				case ageDays < 30:
+					return 1
+				case ageDays < 91:
+					return 2
+				default:
+					return 3
+				}
+			}(d.DurationDays)
+			if bi == bucket {
+				filtered = append(filtered, AgingIssueDTOFromDetail(d))
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": filtered, "total": len(filtered)})
+		return
+	}
+	// otherwise return all
+	out := make([]AgingIssueDTO, 0, len(details))
+	for _, d := range details {
+		out = append(out, AgingIssueDTOFromDetail(d))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": out, "total": len(out)})
+}
+
+type AgingIssueDTO struct {
+	ID           int64    `json:"id"`
+	IID          int      `json:"iid"`
+	Title        string   `json:"title"`
+	Labels       []string `json:"labels"`
+	Modules      []string `json:"modules"`
+	Module       string   `json:"module"`
+	DurationDays int      `json:"duration_days"`
+	Completed    bool     `json:"completed"`
+}
+
+func AgingIssueDTOFromDetail(d store.AgingIssueDetail) AgingIssueDTO {
+	return AgingIssueDTO{
+		ID:           d.ID,
+		IID:          d.IID,
+		Title:        d.Title,
+		Labels:       d.Labels,
+		Modules:      d.Modules,
+		Module:       d.Module,
+		DurationDays: d.DurationDays,
+		Completed:    d.Completed,
+	}
 }
 
 type issueDTO struct {
@@ -261,6 +344,7 @@ func (s *Server) Routes() chi.Router {
 		r.Get("/dashboard/work-metrics", s.GetWorkMetrics)
 		r.Get("/labels", s.GetLabels)
 		r.Get("/issues", s.GetIssues)
+		r.Get("/dashboard/open-aging/issues", s.GetOpenAgingIssues)
 	})
 	return r
 }

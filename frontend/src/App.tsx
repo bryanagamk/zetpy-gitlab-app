@@ -274,6 +274,29 @@ export default function App() {
   );
   const resolveBarHeight = useMemo(() => Math.min(360, Math.max(160, 28 * resolveModuleRows.length + 40)), [resolveModuleRows.length]);
 
+  const [agingModalBucket, setAgingModalBucket] = useState<number | null>(null);
+  const [agingModalItems, setAgingModalItems] = useState<Array<{ id: number; iid: number; title: string; labels: string[]; modules: string[]; module: string; duration_days: number }> | null>(null);
+  const [agingModalLoading, setAgingModalLoading] = useState(false);
+
+  const openAgingBucket = async (bucketIndex: number) => {
+    setAgingModalBucket(bucketIndex);
+    setAgingModalLoading(true);
+    try {
+      const r = await api.getAgingBucketIssues(bucketIndex);
+      setAgingModalItems(r.items as any);
+    } catch (e) {
+      setAgingModalItems([]);
+    } finally {
+      setAgingModalLoading(false);
+    }
+  };
+
+  const closeAgingModal = () => {
+    setAgingModalBucket(null);
+    setAgingModalItems(null);
+    setAgingModalLoading(false);
+  };
+
   const topModulesForChips = useMemo(() => {
     const rows = [...(dash.data?.by_module ?? [])];
     rows.sort((a, b) => b.total - a.total || a.module.localeCompare(b.module));
@@ -609,12 +632,21 @@ export default function App() {
                       </tr>
                     </thead>
                     <tbody>
-                      {workMetrics.data.open_issue_aging.buckets.map((b) => (
-                        <tr key={b.range_label} style={{ borderTop: "1px solid var(--border)" }}>
-                          <td style={td}>{b.range_label}</td>
-                          <td style={td}>{b.total}</td>
-                        </tr>
-                      ))}
+                          {workMetrics.data.open_issue_aging.buckets.map((b, i) => (
+                            <tr key={b.range_label} style={{ borderTop: "1px solid var(--border)" }}>
+                              <td style={td}>{b.range_label}</td>
+                              <td style={td}>
+                                {b.total}{" "}
+                                <button
+                                  type="button"
+                                  onClick={() => void openAgingBucket(i)}
+                                  style={{ marginLeft: 8, padding: "6px 8px", borderRadius: 6, fontSize: 12 }}
+                                >
+                                  View
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
                     </tbody>
                   </table>
                 </>
@@ -779,6 +811,68 @@ export default function App() {
 
       <section style={{ marginTop: 28 }}>
         <h2 style={{ fontSize: "1.15rem", margin: "0 0 12px" }}>Issue list</h2>
+
+        {agingModalBucket != null && (
+          <div
+            style={{
+              position: "fixed",
+              inset: 0,
+              background: "rgba(2,6,23,0.6)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              zIndex: 1200,
+            }}
+            onClick={closeAgingModal}
+          >
+            <div
+              style={{ width: "min(900px, 96%)", maxHeight: "80%", overflow: "auto", background: "var(--panel)", padding: 20, borderRadius: 10 }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                <div>
+                  <strong style={{ fontSize: 16 }}>{workMetrics.data?.open_issue_aging.buckets[agingModalBucket].range_label}</strong>
+                  <div style={{ color: "var(--muted)", fontSize: 13 }}>{workMetrics.data?.open_issue_aging.buckets[agingModalBucket].total} issues</div>
+                </div>
+                <div>
+                  <button type="button" onClick={closeAgingModal} style={{ padding: "6px 10px", borderRadius: 8 }}>
+                    Close
+                  </button>
+                </div>
+              </div>
+              <div>
+                {agingModalLoading ? (
+                  <div style={{ color: "var(--muted)" }}>Loading…</div>
+                ) : agingModalItems && agingModalItems.length > 0 ? (
+                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                    <thead>
+                      <tr style={{ textAlign: "left", color: "var(--muted)" }}>
+                        <th style={th}>IID</th>
+                        <th style={th}>Title</th>
+                        <th style={th}>Labels</th>
+                        <th style={th}>Module</th>
+                        <th style={th}>Duration</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {agingModalItems.map((it) => (
+                        <tr key={it.id} style={{ borderTop: "1px solid var(--border)" }}>
+                          <td style={td} className="mono">{it.iid}</td>
+                          <td style={td}><a href="#" onClick={(e)=>e.preventDefault()}>{it.title}</a></td>
+                          <td style={td}>{(it.labels || []).join(", ")}</td>
+                          <td style={td}>{it.module}</td>
+                          <td style={td}>{it.duration_days} days</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <div style={{ color: "var(--muted)" }}>No issues in this bucket.</div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
         <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12, alignItems: "center" }}>
           <label style={{ fontSize: 13, color: "var(--muted)" }}>
             Status{" "}
