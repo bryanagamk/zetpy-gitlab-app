@@ -157,3 +157,166 @@ func (s *Service) Run(ctx context.Context) (*store.Project, int, int, error) {
 	}
 	return proj, n, len(gLabels), nil
 }
+
+// RunWithProgress runs the sync and emits progress events into the provided channel.
+// The progress channel receives map[string]any messages describing state. The
+// caller should close the channel when finished; RunWithProgress will close it.
+func (s *Service) RunWithProgress(ctx context.Context, progress chan<- map[string]any) (*store.Project, int, int, error) {
+	gp, err := s.Client.GetProject(ctx, s.Path)
+	if err != nil {
+		progress <- map[string]any{"type": "error", "message": err.Error()}
+		close(progress)
+		return nil, 0, 0, err
+	}
+	progress <- map[string]any{"type": "start", "message": "project fetched", "project_id": gp.ID}
+
+	raw, _ := json.Marshal(gp)
+
+	proj := &store.Project{
+		ID:                gp.ID,
+		PathWithNamespace: gp.PathWithNamespace,
+		Name:              gp.Name,
+		WebURL:            gp.WebURL,
+		Description:       sql.NullString{String: gp.Description, Valid: gp.Description != ""},
+		DefaultBranch:     sql.NullString{String: gp.DefaultBranch, Valid: gp.DefaultBranch != ""},
+		StarCount:         gp.StarCount,
+		ForksCount:        gp.ForksCount,
+		OpenIssuesCount:   gp.OpenIssuesCount,
+		Visibility:        sql.NullString{String: gp.Visibility, Valid: gp.Visibility != ""},
+		LastSyncedAt:      sql.NullTime{Time: time.Now().UTC(), Valid: true},
+		RawJSON:           raw,
+	}
+	if err := store.UpsertProject(ctx, s.DB, proj); err != nil {
+		progress <- map[string]any{"type": "error", "message": fmt.Sprintf("upsert project: %v", err)}
+		close(progress)
+		return nil, 0, 0, err
+	}
+
+	n := 0
+	err = s.Client.ListAllIssues(ctx, gp.ID, func(batch []gitlab.Issue) error {
+		progress <- map[string]any{"type": "batch_start", "batch_count": len(batch), "total_synced": n}
+		for _, gi := range batch {
+			assignees := make([]string, 0, len(gi.Assignees))
+			for _, a := range gi.Assignees {
+				assignees = append(assignees, a.Username)
+			}
+			aj, _ := json.Marshal(assignees)
+			lj, _ := json.Marshal(gi.Labels)
+
+			var ms sql.NullString
+			if gi.Milestone != nil && gi.Milestone.Title != "" {
+				ms = sql.NullString{String: gi.Milestone.Title, Valid: true}
+			}
+			var closed sql.NullTime
+			if gi.ClosedAt != nil {
+				closed = sql.NullTime{Time: gi.ClosedAt.UTC(), Valid: true}
+			}
+			it := sql.NullString{}
+			if gi.Type != "" {
+				it = sql.NullString{String: gi.Type, Valid: true}
+			}
+
+			mods := store.IssueModules(gi.Title, gi.Labels)
+			mj, _ := json.Marshal(mods)
+
+			iss := &store.Issue{
+				ID:              gi.ID,
+				ProjectID:       gp.ID,
+				IID:             gi.IID,
+				Title:           gi.Title,
+				Description:     sql.NullString{String: gi.Description, Valid: gi.Description != ""},
+				State:           gi.State,
+				IssueType:       it,
+				WebURL:          gi.WebURL,
+				AuthorUsername:  sql.NullString{String: gi.Author.Username, Valid: gi.Author.Username != ""},
+				AssigneesJSON:   aj,
+				LabelsJSON:      lj,
+				ModulesJSON:     mj,
+				MilestoneTitle:  ms,
+				CreatedAtGitLab: sql.NullTime{Time: gi.CreatedAt.UTC(), Valid: true},
+				UpdatedAtGitLab: sql.NullTime{Time: gi.UpdatedAt.UTC(), Valid: true},
+				ClosedAt:        closed,
+			}
+			if err := store.UpsertIssue(ctx, s.DB, iss); err != nil {
+				return fmt.Errorf("upsert issue %d: %w", gi.ID, err)
+			}
+
+			// fetch and persist label events for this issue
+			if err := s.Client.ListAllIssueLabelEvents(ctx, gp.ID, gi.IID, func(events []gitlab.LabelEvent) error {
+				for _, ev := range events {
+					raw, _ := json.Marshal(ev)
+					ile := &store.IssueLabelEvent{
+						ProjectID:      gp.ID,
+						IssueID:        gi.ID,
+						IssueIID:       gi.IID,
+						GitlabLabelID:  sql.NullInt64{Int64: ev.Label.ID, Valid: ev.Label.ID != 0},
+						LabelName:      ev.Label.Name,
+						Action:         ev.Action,
+						AuthorUsername: sql.NullString{String: ev.User.Username, Valid: ev.User.Username != ""},
+						EventCreatedAt: sql.NullTime{Time: ev.CreatedAt.UTC(), Valid: true},
+						RawJSON:        raw,
+					}
+					if err := store.InsertIssueLabelEvent(ctx, s.DB, ile); err != nil {
+						return fmt.Errorf("insert label event for issue %d: %w", gi.ID, err)
+					}
+				}
+				return nil
+			}); err != nil {
+				return fmt.Errorf("list label events for issue %d: %w", gi.ID, err)
+			}
+
+			// fetch and persist state events (reopen/close)
+			if err := s.Client.ListAllIssueStateEvents(ctx, gp.ID, gi.IID, func(events []gitlab.StateEvent) error {
+				for _, ev := range events {
+					raw, _ := json.Marshal(ev)
+					ise := &store.IssueStateEvent{
+						ProjectID:      gp.ID,
+						IssueID:        gi.ID,
+						IssueIID:       gi.IID,
+						State:          ev.State,
+						AuthorUsername: sql.NullString{String: ev.User.Username, Valid: ev.User.Username != ""},
+						EventCreatedAt: sql.NullTime{Time: ev.CreatedAt.UTC(), Valid: true},
+						RawJSON:        raw,
+					}
+					if err := store.InsertIssueStateEvent(ctx, s.DB, ise); err != nil {
+						return fmt.Errorf("insert state event for issue %d: %w", gi.ID, err)
+					}
+				}
+				return nil
+			}); err != nil {
+				return fmt.Errorf("list state events for issue %d: %w", gi.ID, err)
+			}
+			n++
+		}
+		progress <- map[string]any{"type": "batch_done", "batch_count": len(batch), "total_synced": n}
+		return nil
+	})
+	if err != nil {
+		progress <- map[string]any{"type": "error", "message": err.Error()}
+		close(progress)
+		return proj, n, 0, err
+	}
+
+	gLabels, err := s.Client.ListAllProjectLabels(ctx, gp.ID)
+	if err != nil {
+		progress <- map[string]any{"type": "error", "message": fmt.Sprintf("gitlab labels: %v", err)}
+		close(progress)
+		return proj, n, 0, err
+	}
+	if err := store.ReplaceProjectLabels(ctx, s.DB, gp.ID, gLabels); err != nil {
+		progress <- map[string]any{"type": "error", "message": fmt.Sprintf("save project labels: %v", err)}
+		close(progress)
+		return proj, n, 0, err
+	}
+	progress <- map[string]any{"type": "labels", "count": len(gLabels)}
+
+	proj.LastSyncedAt = sql.NullTime{Time: time.Now().UTC(), Valid: true}
+	if err := store.UpsertProject(ctx, s.DB, proj); err != nil {
+		progress <- map[string]any{"type": "error", "message": err.Error()}
+		close(progress)
+		return proj, n, len(gLabels), err
+	}
+	progress <- map[string]any{"type": "done", "project_id": proj.ID, "issues_synced": n, "labels_synced": len(gLabels), "last_synced_at": proj.LastSyncedAt.Time.UTC().Format(time.RFC3339)}
+	close(progress)
+	return proj, n, len(gLabels), nil
+}

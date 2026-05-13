@@ -177,6 +177,30 @@ export async function postSync(): Promise<{
   }>(res);
 }
 
+export function streamSync(onEvent: (data: any) => void): EventSource {
+  const es = new EventSource(`${prefix}/api/sync/stream`);
+  es.onmessage = (e) => {
+    try {
+      onEvent(JSON.parse(e.data));
+    } catch (err) {
+      // ignore malformed
+    }
+  };
+  es.onerror = () => {
+    // EventSource will reconnect automatically; consumers may close it.
+  };
+  return es;
+}
+
+export async function postClientMetrics(metrics: any): Promise<{ ok: boolean }> {
+  const res = await fetch(`${prefix}/api/client-metrics`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(metrics),
+  });
+  return parseJSON<{ ok: boolean }>(res);
+}
+
 export async function getIssues(params: {
   state?: string;
   module?: string;

@@ -14,8 +14,10 @@ import (
 
 	"gitlab-api/backend/internal/config"
 	"gitlab-api/backend/internal/gitlab"
+	"gitlab-api/backend/internal/metrics"
 	"gitlab-api/backend/internal/store"
 	"gitlab-api/backend/internal/sync"
+	"log"
 )
 
 type Server struct {
@@ -47,6 +49,44 @@ func (s *Server) PostSync(w http.ResponseWriter, r *http.Request) {
 		"labels_synced":  nLabels,
 		"last_synced_at": proj.LastSyncedAt.Time,
 	})
+}
+
+// StreamSync starts a sync and streams progress as Server-Sent Events (SSE).
+func (s *Server) StreamSync(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeErr(w, http.StatusInternalServerError, "streaming not supported")
+		return
+	}
+	// set SSE headers
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	ctx := r.Context()
+	progress := make(chan map[string]any)
+
+	go func() {
+		svc := &sync.Service{
+			DB:     s.DB,
+			Client: gitlab.New(s.Cfg.GitLabBaseURL, s.Cfg.GitLabAccessToken),
+			Path:   s.Cfg.GitLabProjectPath,
+		}
+		_, _, _, err := svc.RunWithProgress(ctx, progress)
+		if err != nil {
+			// RunWithProgress already sends error event; ensure channel closed by it
+		}
+	}()
+
+	for msg := range progress {
+		// SSE: send JSON as data line
+		// write 'data: <json>\n\n'
+		b, _ := json.Marshal(msg)
+		_, _ = w.Write([]byte("data: "))
+		_, _ = w.Write(b)
+		_, _ = w.Write([]byte("\n\n"))
+		flusher.Flush()
+	}
 }
 
 func (s *Server) GetProject(w http.ResponseWriter, r *http.Request) {
@@ -159,6 +199,25 @@ func (s *Server) GetWorkMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, m)
+}
+
+// GetMetrics returns a snapshot of server resource usage helpful for capacity planning.
+func (s *Server) GetMetrics(w http.ResponseWriter, r *http.Request) {
+	snap := metrics.Collect(s.DB)
+	writeJSON(w, http.StatusOK, snap)
+}
+
+// PostClientMetrics accepts lightweight telemetry from browser clients. It's optional
+// and used to estimate client-side resource patterns (device memory, cores, UA).
+func (s *Server) PostClientMetrics(w http.ResponseWriter, r *http.Request) {
+	var body map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	// log to server stdout for now; can be persisted later
+	log.Printf("client-metrics: %v", body)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (s *Server) GetOpenAgingIssues(w http.ResponseWriter, r *http.Request) {
@@ -442,6 +501,7 @@ func (s *Server) Routes() chi.Router {
 	r.Get("/health", s.Health)
 	r.Route("/api", func(r chi.Router) {
 		r.Post("/sync", s.PostSync)
+		r.Get("/sync/stream", s.StreamSync)
 		r.Get("/project", s.GetProject)
 		r.Get("/dashboard", s.GetDashboard)
 		r.Get("/dashboard/issue-trend", s.GetIssueTrend)
@@ -450,6 +510,8 @@ func (s *Server) Routes() chi.Router {
 		r.Get("/issues", s.GetIssues)
 		r.Get("/dashboard/open-aging/issues", s.GetOpenAgingIssues)
 		r.Get("/dashboard/reopened/issues", s.GetReopenedIssues)
+		r.Get("/metrics", s.GetMetrics)
+		r.Post("/client-metrics", s.PostClientMetrics)
 	})
 	return r
 }

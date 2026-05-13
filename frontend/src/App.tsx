@@ -220,22 +220,64 @@ export default function App() {
 
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
+  const [syncLogs, setSyncLogs] = useState<string[]>([]);
+  const [syncEs, setSyncEs] = useState<EventSource | null>(null);
 
   const onSync = async () => {
     setSyncing(true);
     setSyncMsg(null);
-    try {
-      const r = await api.postSync();
-      setSyncMsg(`Sync OK: ${r.issues_synced} issues, ${r.labels_synced} labels.`);
-      await dash.reload();
-      await proj.reload();
-      await issueTrend.reload();
-      await workMetrics.reload();
-    } catch (e) {
-      setSyncMsg(e instanceof Error ? e.message : String(e));
-    } finally {
-      setSyncing(false);
+    setSyncLogs([]);
+    // open SSE stream
+    const es = api.streamSync((data) => {
+      if (!data || typeof data !== "object") return;
+      const t = String(data.type ?? "");
+      const m = (() => {
+        switch (t) {
+          case "start":
+            return `Start: ${data.message ?? ""}`;
+          case "batch_start":
+            return `Processing batch (${data.batch_count}) — total so far ${data.total_synced}`;
+          case "batch_done":
+            return `Batch done (${data.batch_count}) — total ${data.total_synced}`;
+          case "labels":
+            return `Project labels updated: ${data.count}`;
+          case "done":
+            return `Sync complete — ${data.issues_synced} issues, ${data.labels_synced} labels`;
+          case "error":
+            return `Error: ${data.message}`;
+          default:
+            return JSON.stringify(data);
+        }
+      })();
+      setSyncLogs((prev) => [...prev, m]);
+      if (t === "done") {
+        setSyncMsg(`Sync OK: ${data.issues_synced} issues, ${data.labels_synced} labels.`);
+        es.close();
+        setSyncEs(null);
+        setSyncing(false);
+        void dash.reload();
+        void proj.reload();
+        void issueTrend.reload();
+        void workMetrics.reload();
+      }
+      if (t === "error") {
+        setSyncMsg(String(data.message ?? "sync error"));
+        es.close();
+        setSyncEs(null);
+        setSyncing(false);
+      }
+    });
+    setSyncEs(es);
+  };
+
+  const cancelSync = () => {
+    if (syncEs) {
+      syncEs.close();
+      setSyncEs(null);
     }
+    setSyncing(false);
+    setSyncLogs((l) => [...l, "Sync canceled by user"]);
+    setSyncMsg("Sync canceled");
   };
 
   const moduleChartStored = useMemo(
@@ -370,6 +412,26 @@ export default function App() {
   useEffect(() => {
     setPage(1);
   }, [issueState, issueKind, issueModule, issueLabel]);
+
+  // send client metrics once on load to help estimate user device profiles
+  useEffect(() => {
+    try {
+      const payload: any = {
+        userAgent: navigator.userAgent,
+        hwConcurrency: (navigator as any).hardwareConcurrency ?? null,
+        deviceMemory: (navigator as any).deviceMemory ?? null,
+        platform: navigator.platform ?? null,
+        lang: navigator.language ?? null,
+        timestamp: new Date().toISOString(),
+      };
+      if ((performance as any).memory) {
+        payload.perfMemory = (performance as any).memory;
+      }
+      void api.postClientMetrics(payload);
+    } catch (e) {
+      // ignore
+    }
+  }, []);
 
   return (
     <div style={{ maxWidth: 1200, margin: "0 auto", padding: "28px 20px 64px" }}>
@@ -507,6 +569,38 @@ export default function App() {
                   <Legend formatter={(value) => <span style={{ color: '#fff' }}>{String(value)}</span>} />
                 </PieChart>
               </ResponsiveContainer>
+                  {syncing && (
+                    <div
+                      style={{
+                        position: "fixed",
+                        inset: 0,
+                        background: "rgba(2,6,23,0.45)",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        zIndex: 1300,
+                      }}
+                      onClick={cancelSync}
+                    >
+                      <div
+                        style={{ width: "min(880px, 96%)", maxHeight: "70%", overflow: "auto", background: "var(--panel)", padding: 18, borderRadius: 10 }}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                          <strong>Sync progress</strong>
+                          <div>
+                            <button type="button" onClick={cancelSync} style={{ padding: "6px 10px", borderRadius: 8 }}>Cancel</button>
+                          </div>
+                        </div>
+                        <div style={{ height: 8, background: "#0b1220", borderRadius: 8, overflow: "hidden", marginBottom: 12 }}>
+                          <div style={{ height: "100%", width: "100%", background: "linear-gradient(90deg,#3b82f6,#06b6d4)" }} />
+                        </div>
+                        <div style={{ fontSize: 13, color: "var(--muted)", maxHeight: 320, overflow: "auto" }}>
+                          {syncLogs.length === 0 ? <div>Starting…</div> : syncLogs.map((l, i) => <div key={i} style={{ padding: "6px 0", borderBottom: "1px solid var(--border)" }}>{l}</div>)}
+                        </div>
+                      </div>
+                    </div>
+                  )}
             </div>
           ) : null}
         </Panel>
